@@ -19,7 +19,22 @@ from typing import Dict, List, Optional, Union, Any
 from urllib.parse import quote, urlencode, urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from mcp.server.fastmcp import FastMCP
+
+# Create a global session for connection pooling
+http_session = requests.Session()
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=0.5,
+    status_forcelist=[502, 503, 504],
+    allowed_methods=["GET", "POST", "PATCH", "PUT", "DELETE"]
+)
+adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=20)
+http_session.mount("http://", adapter)
+http_session.mount("https://", adapter)
+
 
 # ================= Core Infrastructure =================
 
@@ -256,7 +271,7 @@ def _make_request(method: str, port: int, endpoint: str, params: dict | None = N
             request_headers['Content-Type'] = 'text/plain'
 
     try:
-        response = requests.request(
+        response = http_session.request(
             method,
             url,
             params=params,
@@ -1393,7 +1408,7 @@ def register_instance(port: int, url: str | None = None) -> str:
     try:
         # Check for HATEOAS API by checking plugin-version endpoint
         test_url = f"{url}/plugin-version"
-        response = requests.get(test_url, timeout=2)
+        response = http_session.get(test_url, timeout=2)
         
         if not response.ok:
             return f"Error: Instance at {url} is not responding properly to HATEOAS API"
@@ -1427,7 +1442,7 @@ def register_instance(port: int, url: str | None = None) -> str:
             info_url = f"{url}/program"
             
             try:
-                info_response = requests.get(info_url, timeout=2)
+                info_response = http_session.get(info_url, timeout=2)
                 if info_response.ok:
                     try:
                         info_data = info_response.json()
@@ -1488,7 +1503,7 @@ def _discover_instances(port_range, host=None, timeout=0.5) -> dict:
         try:
             # Try HATEOAS API via plugin-version endpoint
             test_url = f"{url}/plugin-version"
-            response = requests.get(test_url, 
+            response = http_session.get(test_url,
                                   headers={'Accept': 'application/json', 
                                            'X-Request-ID': f"discovery-{int(time.time() * 1000)}"},
                                   timeout=timeout)
@@ -1550,7 +1565,7 @@ def periodic_discovery():
                     url = info["url"]
                     try:
                         # Check HATEOAS API via plugin-version endpoint
-                        response = requests.get(f"{url}/plugin-version", timeout=1)
+                        response = http_session.get(f"{url}/plugin-version", timeout=1)
                         if not response.ok:
                             ports_to_remove.append(port)
                             continue
@@ -1558,7 +1573,7 @@ def periodic_discovery():
                         # Update program info if available (especially to get project name)
                         try:
                             info_url = f"{url}/program"
-                            info_response = requests.get(info_url, timeout=1)
+                            info_response = http_session.get(info_url, timeout=1)
                             if info_response.ok:
                                 try:
                                     info_data = info_response.json()
