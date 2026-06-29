@@ -53,4 +53,5 @@ replay_pid*
 **/__pycache__/
 *.pyc
 handoff.md
+venv/
 docs/COMPETITIVE_GAPS.md
