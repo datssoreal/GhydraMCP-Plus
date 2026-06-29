@@ -62,7 +62,7 @@ DEFAULT_GHIDRA_HOST = "localhost"
 QUICK_DISCOVERY_RANGE = range(DEFAULT_GHIDRA_PORT, DEFAULT_GHIDRA_PORT+10)
 FULL_DISCOVERY_RANGE = range(DEFAULT_GHIDRA_PORT, DEFAULT_GHIDRA_PORT+20)
 
-BRIDGE_VERSION = "v3.3.0"
+BRIDGE_VERSION = "v3.3.1"
 REQUIRED_API_VERSION = 3000
 
 DEFAULT_TIMEOUT = int(os.environ.get("GHIDRA_TIMEOUT", "900"))
@@ -937,6 +937,76 @@ def format_dataflow(response: dict, **kwargs) -> str:
     return "\n".join(lines)
 
 
+def format_call_paths(response: dict, **kwargs) -> str:
+    """Format analysis_find_call_paths response as plain text."""
+    if not response.get("success", False):
+        return format_error(response)
+    result = response.get("result", {})
+    from_fn = result.get("from", "?")
+    to_fn = result.get("to", "?")
+    paths = result.get("paths", [])
+    truncated = result.get("truncated", False)
+    unresolved = result.get("unresolved_edges", 0)
+
+    if not paths:
+        note = " (some edges unresolved — may still be reachable)" if unresolved else ""
+        return f"No paths found from {from_fn} to {to_fn}.{note}"
+
+    flags = []
+    if truncated:
+        flags.append("truncated")
+    if unresolved:
+        flags.append(f"{unresolved} unresolved edge(s)")
+    flag_str = f" [{', '.join(flags)}]" if flags else ""
+    lines = [f"Call paths: {from_fn} -> {to_fn} ({len(paths)} path(s)){flag_str}", ""]
+
+    for i, path in enumerate(paths, 1):
+        funcs = path.get("functions", [])
+        chain = " -> ".join(f.get("name", f.get("address", "?")) for f in funcs)
+        lines.append(f"  Path {i} ({path.get('length', len(funcs))} hops): {chain}")
+
+    return "\n".join(lines)
+
+
+def format_string_usage(response: dict, **kwargs) -> str:
+    """Format analysis_trace_string_usage response as plain text."""
+    if not response.get("success", False):
+        return format_error(response)
+    result = response.get("result", {})
+    value = result.get("value", "?")
+    matches = result.get("matches", [])
+    total = result.get("size", 0)
+    truncated = result.get("truncated", False)
+    unresolved = result.get("unresolved_refs", 0)
+
+    if not matches:
+        return f'No strings matching "{value}" found.'
+
+    flags = []
+    if truncated:
+        flags.append("truncated")
+    if unresolved:
+        flags.append(f"{unresolved} unresolved ref(s)")
+    flag_str = f" [{', '.join(flags)}]" if flags else ""
+    lines = [f'String usage: "{value}" — {total} match(es){flag_str}', ""]
+
+    for m in matches:
+        s = m.get("string", {})
+        addr = s.get("address", "?")
+        val = s.get("value", "")
+        direct = m.get("directUsers", [])
+        callers_list = m.get("callers", [])
+        lines.append(f"  {addr}  {val!r}")
+        for f in direct:
+            lines.append(f"    used by: {f.get('name', f.get('address', '?'))}")
+        for c in callers_list:
+            fn = c.get("function", {})
+            depth = c.get("depth", "?")
+            lines.append(f"    caller (depth {depth}): {fn.get('name', fn.get('address', '?'))}")
+
+    return "\n".join(lines)
+
+
 def format_structs_list(response: dict, offset: int = 0, **kwargs) -> str:
     """Format struct list as plain text"""
     if not response.get("success", False):
@@ -1272,6 +1342,8 @@ FORMATTERS = {
     "variables_list": format_variables_list,
     "datatypes_list": format_datatypes_list,
     "datatypes_search": format_datatypes_list,
+    "analysis_find_call_paths": format_call_paths,
+    "analysis_trace_string_usage": format_string_usage,
 }
 
 
@@ -1309,11 +1381,11 @@ def simplify_response(response: dict) -> dict:
     - Preserves important metadata
     - Converts structured data like disassembly to text for easier consumption
     """
-    if not isinstance(response, dict):
+    if not isinstance(response, dict) and not hasattr(response, "copy"):
         return response
 
     # Make a copy to avoid modifying the original
-    result = response.copy()
+    result = response.copy() if hasattr(response, "copy") else dict(response)
     
     # Store API response metadata
     api_metadata = {}
@@ -1327,7 +1399,7 @@ def simplify_response(response: dict) -> dict:
         if isinstance(result["result"], list):
             simplified_items = []
             for item in result["result"]:
-                if isinstance(item, dict):
+                if hasattr(item, "copy") and hasattr(item, "pop"):
                     # Store but remove HATEOAS links from individual items
                     item_copy = item.copy()
                     links = item_copy.pop("_links", None)
@@ -1345,7 +1417,7 @@ def simplify_response(response: dict) -> dict:
             result["result"] = simplified_items
         
         # Handle object results
-        elif isinstance(result["result"], dict):
+        elif hasattr(result["result"], "copy") and hasattr(result["result"], "pop"):
             result_copy = result["result"].copy()
             
             # Store but remove links from result object
@@ -4185,12 +4257,27 @@ def analysis_find_call_paths(from_fn: str, to_fn: str, max_depth: int = 5,
         port: Specific Ghidra instance port (optional).
 
     Returns:
-        dict: {from, to, max_depth, max_paths, truncated, paths:[{length, functions:[...]}]}
+        dict: {from, to, max_depth, max_paths, truncated, unresolved_edges,
+               paths:[{length, functions:[...]}]}. unresolved_edges > 0 means the walk
+               could not traverse some call edges (thunks/indirect calls), so an empty
+               paths list does not prove from cannot reach to.
     """
     if not from_fn or not to_fn:
         return {
             "success": False,
             "error": {"code": "MISSING_PARAMETER", "message": "Both from_fn and to_fn are required"},
+            "timestamp": int(time.time() * 1000),
+        }
+    if max_depth < 1:
+        return {
+            "success": False,
+            "error": {"code": "INVALID_PARAMETER", "message": "max_depth must be >= 1"},
+            "timestamp": int(time.time() * 1000),
+        }
+    if max_paths < 1:
+        return {
+            "success": False,
+            "error": {"code": "INVALID_PARAMETER", "message": "max_paths must be >= 1"},
             "timestamp": int(time.time() * 1000),
         }
     port = _get_instance_port(port)
@@ -4214,8 +4301,10 @@ def analysis_trace_string_usage(value: str, match: str = "substring", caller_dep
         port: Specific Ghidra instance port (optional).
 
     Returns:
-        dict: {value, match, caller_depth, size, offset, limit, truncated,
-               matches:[{string:{address,value}, directUsers:[...], callers:[{function,depth}]}]}
+        dict: {value, match, caller_depth, size, offset, limit, truncated, unresolved_refs,
+               matches:[{string:{address,value}, directUsers:[...], callers:[{function,depth}]}]}.
+               unresolved_refs > 0 means some references came from outside a defined function,
+               so directUsers/callers under-report who touches the string.
     """
     if not value:
         return {
