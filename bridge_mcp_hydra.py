@@ -23,17 +23,31 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from mcp.server.fastmcp import FastMCP
 
-# Create a global session for connection pooling
-http_session = requests.Session()
-retry_strategy = Retry(
-    total=3,
-    backoff_factor=0.5,
-    status_forcelist=[502, 503, 504],
-    allowed_methods=["GET", "POST", "PATCH", "PUT", "DELETE"]
-)
-adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=20)
-http_session.mount("http://", adapter)
-http_session.mount("https://", adapter)
+# Create per-port sessions for connection pooling
+_port_sessions = {}
+_discovery_session = requests.Session() # Bare session for fail-fast discovery
+_sessions_lock = Lock()
+
+def _get_session(port: int) -> requests.Session:
+    with _sessions_lock:
+        if port not in _port_sessions:
+            s = requests.Session()
+            retry_strategy = Retry(
+                total=3,
+                backoff_factor=0.5,
+                status_forcelist=[502, 503, 504],
+                allowed_methods=["GET", "POST", "PATCH", "PUT", "DELETE"]
+            )
+            adapter = HTTPAdapter(
+                max_retries=retry_strategy,
+                pool_connections=2,
+                pool_maxsize=5
+            )
+            s.mount("http://", adapter)
+            s.mount("https://", adapter)
+            _port_sessions[port] = s
+        return _port_sessions[port]
+
 
 
 # ================= Core Infrastructure =================
@@ -271,7 +285,7 @@ def _make_request(method: str, port: int, endpoint: str, params: dict | None = N
             request_headers['Content-Type'] = 'text/plain'
 
     try:
-        response = http_session.request(
+        response = _get_session(port).request(
             method,
             url,
             params=params,
@@ -1408,7 +1422,7 @@ def register_instance(port: int, url: str | None = None) -> str:
     try:
         # Check for HATEOAS API by checking plugin-version endpoint
         test_url = f"{url}/plugin-version"
-        response = http_session.get(test_url, timeout=2)
+        response = _discovery_session.get(test_url, timeout=2)
         
         if not response.ok:
             return f"Error: Instance at {url} is not responding properly to HATEOAS API"
@@ -1442,7 +1456,7 @@ def register_instance(port: int, url: str | None = None) -> str:
             info_url = f"{url}/program"
             
             try:
-                info_response = http_session.get(info_url, timeout=2)
+                info_response = _discovery_session.get(info_url, timeout=2)
                 if info_response.ok:
                     try:
                         info_data = info_response.json()
@@ -1503,7 +1517,7 @@ def _discover_instances(port_range, host=None, timeout=0.5) -> dict:
         try:
             # Try HATEOAS API via plugin-version endpoint
             test_url = f"{url}/plugin-version"
-            response = http_session.get(test_url,
+            response = _discovery_session.get(test_url,
                                   headers={'Accept': 'application/json', 
                                            'X-Request-ID': f"discovery-{int(time.time() * 1000)}"},
                                   timeout=timeout)
@@ -1565,7 +1579,7 @@ def periodic_discovery():
                     url = info["url"]
                     try:
                         # Check HATEOAS API via plugin-version endpoint
-                        response = http_session.get(f"{url}/plugin-version", timeout=1)
+                        response = _discovery_session.get(f"{url}/plugin-version", timeout=1)
                         if not response.ok:
                             ports_to_remove.append(port)
                             continue
@@ -1573,7 +1587,7 @@ def periodic_discovery():
                         # Update program info if available (especially to get project name)
                         try:
                             info_url = f"{url}/program"
-                            info_response = http_session.get(info_url, timeout=1)
+                            info_response = _discovery_session.get(info_url, timeout=1)
                             if info_response.ok:
                                 try:
                                     info_data = info_response.json()
@@ -2281,6 +2295,10 @@ def instances_unregister(port: int) -> str:
     with instances_lock:
         if port in active_instances:
             del active_instances[port]
+            with _sessions_lock:
+                if port in _port_sessions:
+                    _port_sessions[port].close()
+                    del _port_sessions[port]
             return f"Unregistered instance on port {port}"
         return f"No instance found on port {port}"
 
