@@ -49,9 +49,23 @@ mvnw.cmd
 hs_err_pid*
 replay_pid*
 
+# Python
 /__pycache__
 **/__pycache__/
 *.pyc
-handoff.md
+*.egg-info/
+dist/
+.eggs/
 venv/
+.pytest_cache/
+
+# Test cache
+.pytest_cache/
+
+# Agent session scratch files
+.superpowers/
+
+# Local artifacts
+handoff.md
 docs/COMPETITIVE_GAPS.md
+.superpowers/
