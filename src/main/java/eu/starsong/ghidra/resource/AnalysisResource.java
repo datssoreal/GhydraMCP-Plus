@@ -111,14 +111,19 @@ public class AnalysisResource implements Resource {
         if (from == null || from.isEmpty() || to == null || to.isEmpty()) {
             throw new IllegalArgumentException("Both 'from' and 'to' query parameters are required");
         }
-        int maxDepth = Math.min(ctx.queryParamAsInt("max_depth", 5), 15);
-        int maxPaths = Math.min(ctx.queryParamAsInt("max_paths", 50), 500);
-        int maxVisitedEdges = Math.min(ctx.queryParamAsInt("max_visited_edges", 10000), 100000);
+        int maxDepth = Math.min(Math.max(ctx.queryParamAsInt("max_depth", 5), 0), 15);
+        int maxPaths = Math.min(Math.max(ctx.queryParamAsInt("max_paths", 50), 1), 500);
+        int maxVisitedEdges = Math.min(Math.max(ctx.queryParamAsInt("max_visited_edges", 10000), 1), 100000);
 
         Map<String, Object> result = analysisService.findCallPaths(program, from, to, maxDepth, maxPaths, maxVisitedEdges);
 
+        // URL-encode from/to: per the FQN convention they may contain '::', '&', '?', '+' or
+        // spaces, which would otherwise produce a malformed/ambiguous self link.
+        String encFrom = URLEncoder.encode(from, StandardCharsets.UTF_8);
+        String encTo = URLEncoder.encode(to, StandardCharsets.UTF_8);
         ctx.json(Response.ok(ctx.ctx(), ctx.port(), result)
-            .self("/analysis/callpaths?from={}&to={}&max_depth={}&max_paths={}", from, to, maxDepth, maxPaths)
+            .self("/analysis/callpaths?from=" + encFrom + "&to=" + encTo
+                + "&max_depth=" + maxDepth + "&max_paths=" + maxPaths)
             .link("from", "/functions/{}", String.valueOf(result.get("from")))
             .link("to", "/functions/{}", String.valueOf(result.get("to")))
             .build());
@@ -136,7 +141,7 @@ public class AnalysisResource implements Resource {
         }
         int callerDepth = Math.min(Math.max(ctx.queryParamAsInt("caller_depth", 0), 0), 5);
         int maxStrings = Math.min(ctx.queryParamAsInt("max_strings", 200), 1000);
-        int maxFunctions = Math.min(ctx.queryParamAsInt("max_functions", 500), 5000);
+        int maxFunctions = Math.min(Math.max(ctx.queryParamAsInt("max_functions", 500), 0), 5000);
         var pg = ctx.pagination();
 
         Map<String, Object> result = analysisService.traceStringUsage(
@@ -146,7 +151,7 @@ public class AnalysisResource implements Resource {
         int offset = (int) result.get("offset");
         int limit = (int) result.get("limit");
         String enc = URLEncoder.encode(value, StandardCharsets.UTF_8);
-        String base = String.format("/analysis/strings/usage?value=%s&match=%s&caller_depth=%d", enc, match, callerDepth);
+        String base = String.format("/analysis/strings/usage?value=%s&match=%s&caller_depth=%d&max_strings=%d&max_functions=%d", enc, match, callerDepth, maxStrings, maxFunctions);
 
         Response resp = Response.ok(ctx.ctx(), ctx.port(), result)
             .self(base + "&offset=" + offset + "&limit=" + limit)
