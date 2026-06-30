@@ -9,14 +9,12 @@ import eu.starsong.ghidra.hateoas.Paginator;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.DataTypeService;
 import eu.starsong.ghidra.service.DataTypeService.FieldSpec;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 
 public class DataTypeResource implements Resource {
 
@@ -31,11 +29,11 @@ public class DataTypeResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/datatypes", ctx -> list(contextFactory.apply(ctx)));
-        app.post("/datatypes/struct", ctx -> createStruct(contextFactory.apply(ctx)));
-        app.post("/datatypes/enum", ctx -> createEnum(contextFactory.apply(ctx)));
-        app.post("/datatypes/union", ctx -> createUnion(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/datatypes", this::list);
+        routes.post("/datatypes/struct", this::createStruct);
+        routes.post("/datatypes/enum", this::createEnum);
+        routes.post("/datatypes/union", this::createUnion);
     }
 
     private void list(GhidraContext ctx) {

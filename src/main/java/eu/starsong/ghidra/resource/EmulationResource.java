@@ -4,15 +4,13 @@ import eu.starsong.ghidra.dto.EmulationStateDto;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.EmulationService;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 
 /** REST resource for /emulation endpoints (PCode emulation). */
 public class EmulationResource implements Resource {
@@ -25,22 +23,22 @@ public class EmulationResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.post("/emulation/reset", ctx -> reset(contextFactory.apply(ctx)));
-        app.post("/emulation/run", ctx -> run(contextFactory.apply(ctx)));
-        app.post("/emulation/step", ctx -> step(contextFactory.apply(ctx)));
-        app.get("/emulation/state", ctx -> state(contextFactory.apply(ctx)));
-        app.get("/emulation/registers/{name}", ctx -> readRegister(contextFactory.apply(ctx)));
-        app.post("/emulation/registers", ctx -> writeRegister(contextFactory.apply(ctx)));
-        app.get("/emulation/memory/{address}", ctx -> readMemory(contextFactory.apply(ctx)));
-        app.post("/emulation/memory", ctx -> writeMemory(contextFactory.apply(ctx)));
-        app.post("/emulation/breakpoints", ctx -> setBreakpoint(contextFactory.apply(ctx)));
-        app.delete("/emulation/breakpoints/{address}", ctx -> clearBreakpoint(contextFactory.apply(ctx)));
-        app.post("/emulation/hooks", ctx -> setHook(contextFactory.apply(ctx)));
-        app.delete("/emulation/hooks/{address}", ctx -> clearHook(contextFactory.apply(ctx)));
-        app.get("/emulation/hooks", ctx -> listHooks(contextFactory.apply(ctx)));
-        app.post("/emulation/call", ctx -> call(contextFactory.apply(ctx)));
-        app.delete("/emulation", ctx -> dispose(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.post("/emulation/reset", this::reset);
+        routes.post("/emulation/run", this::run);
+        routes.post("/emulation/step", this::step);
+        routes.get("/emulation/state", this::state);
+        routes.get("/emulation/registers/{name}", this::readRegister);
+        routes.post("/emulation/registers", this::writeRegister);
+        routes.get("/emulation/memory/{address}", this::readMemory);
+        routes.post("/emulation/memory", this::writeMemory);
+        routes.post("/emulation/breakpoints", this::setBreakpoint);
+        routes.delete("/emulation/breakpoints/{address}", this::clearBreakpoint);
+        routes.post("/emulation/hooks", this::setHook);
+        routes.delete("/emulation/hooks/{address}", this::clearHook);
+        routes.get("/emulation/hooks", this::listHooks);
+        routes.post("/emulation/call", this::call);
+        routes.delete("/emulation", this::dispose);
     }
 
     private void respond(GhidraContext ctx, EmulationStateDto dto) {

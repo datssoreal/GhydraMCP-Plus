@@ -3,12 +3,10 @@ package eu.starsong.ghidra.resource;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.ScriptService;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.List;
-import java.util.function.Function;
 
 /**
  * List and run Ghidra scripts: GET /scripts and POST /scripts/run.
@@ -33,9 +31,9 @@ public class ScriptResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/scripts", ctx -> list(contextFactory.apply(ctx)));
-        app.post("/scripts/run", ctx -> run(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/scripts", this::list);
+        routes.post("/scripts/run", this::run);
     }
 
     private void list(GhidraContext ctx) {

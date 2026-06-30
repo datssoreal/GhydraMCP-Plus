@@ -14,8 +14,6 @@ import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Consumer;
 
 /**
  * Factory and manager for the Javalin HTTP server.
@@ -28,6 +26,7 @@ public class GhydraServer {
     private final Map<Integer, Object> activeInstances;
     private final boolean isBaseInstance;
     private final List<Resource> resources = new ArrayList<>();
+    private final RouteRegistry routeRegistry = new RouteRegistry();
 
     private Javalin app;
 
@@ -99,6 +98,11 @@ public class GhydraServer {
     }
 
     /**
+     * Get the RouteRegistry (used by the /batch pipeline).
+     */
+    public RouteRegistry routeRegistry() { return routeRegistry; }
+
+    /**
      * Get the Javalin app instance.
      */
     public Javalin app() {
@@ -163,9 +167,13 @@ public class GhydraServer {
     }
 
     private void registerResources() {
+        Routes routes = new Routes(app, this::createContext, routeRegistry);
         for (Resource resource : resources) {
-            resource.register(app, this::createContext);
+            resource.register(routes);
         }
+        // Auto-register the batch pipeline last so every other route is already
+        // present in the registry (BatchResource only needs the registry instance).
+        // new eu.starsong.ghidra.resource.BatchResource(routeRegistry).register(routes);
     }
 
     /**

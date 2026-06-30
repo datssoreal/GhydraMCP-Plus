@@ -6,13 +6,11 @@ import eu.starsong.ghidra.hateoas.Paginator;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.DataService;
 import eu.starsong.ghidra.service.DataService.DataFilter;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.List;
-import java.util.function.Function;
 
 public class DataResource implements Resource {
 
@@ -27,10 +25,10 @@ public class DataResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/data", ctx -> list(contextFactory.apply(ctx)));
-        app.get("/strings", ctx -> listStrings(contextFactory.apply(ctx)));
-        app.get("/data/{address}", ctx -> getByAddress(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/data", this::list);
+        routes.get("/strings", this::listStrings);
+        routes.get("/data/{address}", this::getByAddress);
         // Route semantics:
         //   GET    /data/{addr}        -> read
         //   POST   /data/{addr}        -> create data of a type (201)
@@ -38,11 +36,11 @@ public class DataResource implements Resource {
         //   PATCH  /data/{addr}        -> partial update (rename and/or retype)
         //   PATCH  /data/{addr}/type   -> set the data type only (never renames)
         //   DELETE /data/{addr}        -> clear
-        app.put("/data/{address}", ctx -> setDataType(contextFactory.apply(ctx)));
-        app.post("/data/{address}", ctx -> createAt(contextFactory.apply(ctx)));
-        app.patch("/data/{address}", ctx -> update(contextFactory.apply(ctx)));
-        app.patch("/data/{address}/type", ctx -> setType(contextFactory.apply(ctx)));
-        app.delete("/data/{address}", ctx -> clearAt(contextFactory.apply(ctx)));
+        routes.put("/data/{address}", this::setDataType);
+        routes.post("/data/{address}", this::createAt);
+        routes.patch("/data/{address}", this::update);
+        routes.patch("/data/{address}/type", this::setType);
+        routes.delete("/data/{address}", this::clearAt);
     }
 
     private void list(GhidraContext ctx) {

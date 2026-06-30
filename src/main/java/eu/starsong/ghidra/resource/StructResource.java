@@ -7,12 +7,10 @@ import eu.starsong.ghidra.hateoas.Paginator;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.StructService;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.List;
-import java.util.function.Function;
 
 public class StructResource implements Resource {
 
@@ -27,19 +25,19 @@ public class StructResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/structs", ctx -> list(contextFactory.apply(ctx)));
-        app.post("/structs", ctx -> create(contextFactory.apply(ctx)));
-        app.get("/structs/{name}", ctx -> getByName(contextFactory.apply(ctx)));
-        app.delete("/structs/{name}", ctx -> delete(contextFactory.apply(ctx)));
-        app.post("/structs/{name}/fields", ctx -> addField(contextFactory.apply(ctx)));
-        app.patch("/structs/{name}/fields/{fieldId}", ctx -> updateField(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/structs", this::list);
+        routes.post("/structs", this::create);
+        routes.get("/structs/{name}", this::getByName);
+        routes.delete("/structs/{name}", this::delete);
+        routes.post("/structs/{name}/fields", this::addField);
+        routes.patch("/structs/{name}/fields/{fieldId}", this::updateField);
 
         // Legacy POST routes (bridge compatibility)
-        app.post("/structs/create", ctx -> create(contextFactory.apply(ctx)));
-        app.post("/structs/delete", ctx -> deleteLegacy(contextFactory.apply(ctx)));
-        app.post("/structs/addfield", ctx -> addFieldLegacy(contextFactory.apply(ctx)));
-        app.post("/structs/updatefield", ctx -> updateFieldLegacy(contextFactory.apply(ctx)));
+        routes.post("/structs/create", this::create);
+        routes.post("/structs/delete", this::deleteLegacy);
+        routes.post("/structs/addfield", this::addFieldLegacy);
+        routes.post("/structs/updatefield", this::updateFieldLegacy);
     }
 
     private void list(GhidraContext ctx) {

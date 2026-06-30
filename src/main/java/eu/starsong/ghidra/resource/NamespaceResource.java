@@ -3,12 +3,10 @@ package eu.starsong.ghidra.resource;
 import eu.starsong.ghidra.hateoas.Paginator;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.NamespaceService;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.List;
-import java.util.function.Function;
 
 public class NamespaceResource implements Resource {
 
@@ -23,8 +21,8 @@ public class NamespaceResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/namespaces", ctx -> list(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/namespaces", this::list);
     }
 
     private void list(GhidraContext ctx) {

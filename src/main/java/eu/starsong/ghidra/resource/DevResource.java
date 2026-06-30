@@ -3,17 +3,15 @@ package eu.starsong.ghidra.resource;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.SaveService;
 import ghidra.app.services.ProgramManager;
 import ghidra.framework.plugintool.PluginTool;
 import ghidra.program.model.listing.Program;
 import ghidra.util.Msg;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.function.Function;
 
 /**
  * Dev-only endpoint that shuts Ghidra down so the build/deploy/restart loop can be
@@ -50,8 +48,8 @@ public class DevResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.post("/dev/shutdown", ctx -> shutdown(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.post("/dev/shutdown", this::shutdown);
     }
 
     private void shutdown(GhidraContext ctx) {

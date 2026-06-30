@@ -6,12 +6,10 @@ import eu.starsong.ghidra.hateoas.Paginator;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.MemoryService;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.List;
-import java.util.function.Function;
 
 /**
  * REST resource for /segments endpoints.
@@ -26,9 +24,9 @@ public class SegmentResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/segments", ctx -> list(contextFactory.apply(ctx)));
-        app.get("/segments/{name}", ctx -> getByName(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/segments", this::list);
+        routes.get("/segments/{name}", this::getByName);
     }
 
     /**

@@ -3,6 +3,7 @@ package eu.starsong.ghidra.resource;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.MemoryService;
 import eu.starsong.ghidra.service.SaveService;
 import eu.starsong.ghidra.util.GhidraSwing;
@@ -10,14 +11,11 @@ import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.DomainFolder;
 import ghidra.framework.model.Project;
 import ghidra.program.model.listing.Program;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 
 /**
  * REST resource for /program and /programs endpoints.
@@ -28,14 +26,14 @@ public class ProgramResource implements Resource {
     private final SaveService saveService = new SaveService();
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/program", ctx -> getCurrentProgram(contextFactory.apply(ctx)));
-        app.get("/programs", ctx -> listPrograms(contextFactory.apply(ctx)));
-        app.get("/programs/current", ctx -> getCurrentProgram(contextFactory.apply(ctx)));
-        app.patch("/programs/current/memory/{address}", ctx -> writeMemory(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/program", this::getCurrentProgram);
+        routes.get("/programs", this::listPrograms);
+        routes.get("/programs/current", this::getCurrentProgram);
+        routes.patch("/programs/current/memory/{address}", this::writeMemory);
         // Persist analysis. ?all=true saves every open program with unsaved changes.
-        app.post("/program/save", ctx -> saveProgram(contextFactory.apply(ctx)));
-        app.post("/programs/save", ctx -> saveProgram(contextFactory.apply(ctx)));
+        routes.post("/program/save", this::saveProgram);
+        routes.post("/programs/save", this::saveProgram);
     }
 
     private void saveProgram(GhidraContext ctx) {

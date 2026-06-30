@@ -3,9 +3,8 @@ package eu.starsong.ghidra.resource;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.VariableService;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 public class VariableResource implements Resource {
 
@@ -20,8 +19,8 @@ public class VariableResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, java.util.function.Function<Context, GhidraContext> contextFactory) {
-        app.get("/variables", ctx -> list(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/variables", this::list);
     }
 
     private void list(GhidraContext ctx) {
