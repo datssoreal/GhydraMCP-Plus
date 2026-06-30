@@ -988,6 +988,12 @@ so paths, path/query parameters, and request bodies behave identically.
   every mutation made earlier in the batch) and all remaining sub-requests are reported as
   `ROLLED_BACK`. Requires a program to be loaded.
 
+  > **Per-item `success` after a rollback:** sub-requests that ran *before* the failing one keep
+  > their original `status`/`success: true` in the result array **even though the rollback
+  > reverted their mutations**. Only sub-requests *after* the failure carry `ROLLED_BACK`. Treat
+  > an atomic batch as all-or-nothing based on the failing item — do not read a pre-failure
+  > sub-request's `success: true` as "this change persisted".
+
   **Batch-specific error codes** (in a sub-request's error `body`):
   - `NO_ROUTE` (404): no endpoint matches the sub-request's `method`+`path`.
   - `NO_NESTED_BATCH` (400): a sub-request targets `/batch` (nesting is not allowed).
