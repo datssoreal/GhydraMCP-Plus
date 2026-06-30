@@ -6,13 +6,11 @@ import eu.starsong.ghidra.hateoas.Paginator;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.SymbolService;
 import eu.starsong.ghidra.service.SymbolService.SymbolFilter;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.List;
-import java.util.function.Function;
 
 /**
  * REST resource for /symbols endpoints.
@@ -30,14 +28,14 @@ public class SymbolResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/symbols", ctx -> list(contextFactory.apply(ctx)));
-        app.get("/symbols/imports", ctx -> listImports(contextFactory.apply(ctx)));
-        app.get("/symbols/exports", ctx -> listExports(contextFactory.apply(ctx)));
-        app.get("/symbols/{address}", ctx -> getByAddress(contextFactory.apply(ctx)));
-        app.patch("/symbols/{address}", ctx -> update(contextFactory.apply(ctx)));
-        app.delete("/symbols/{address}", ctx -> delete(contextFactory.apply(ctx)));
-        app.post("/symbols", ctx -> create(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/symbols", this::list);
+        routes.get("/symbols/imports", this::listImports);
+        routes.get("/symbols/exports", this::listExports);
+        routes.get("/symbols/{address}", this::getByAddress);
+        routes.patch("/symbols/{address}", this::update);
+        routes.delete("/symbols/{address}", this::delete);
+        routes.post("/symbols", this::create);
     }
 
     /**

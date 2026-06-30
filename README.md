@@ -241,6 +241,16 @@ Tools are grouped into namespaces:
 - `analysis_find_call_paths`: Discover bounded call-paths between two functions (params: from_fn, to_fn, max_depth [optional], max_paths [optional], port [optional])
 - `analysis_trace_string_usage`: Trace string usage with optional reverse-call-graph walk (params: value, match [optional], caller_depth [optional], offset [optional], limit [optional], port [optional])
 
+**Batch** (`batch_execute` + named `*_batch` wrappers): execute many operations in one HTTP roundtrip.
+- `batch_execute`: Run an array of virtual sub-requests against existing endpoints (params: requests [list of `{method, path, body?}`], atomic [optional, default false], port [optional]); returns an ordered array of `{index, status, success, body}`. With `atomic=true` the whole batch runs in one Ghidra transaction and rolls back entirely on the first failure.
+- `functions_decompile_batch`: Decompile multiple functions (params: names [list of FQNs], port [optional])
+- `functions_rename_batch`: Rename multiple functions (params: renames [list of `{old, new}`], atomic [optional], port [optional])
+- `data_create_batch`: Create multiple data items (params: items [list of `{address, type, name?}`], atomic [optional], port [optional])
+- `data_set_type_batch`: Set type on multiple data items (params: items [list of `{address, type}`], atomic [optional], port [optional])
+- `data_rename_batch`: Rename multiple data items (params: items [list of `{address, name}`], atomic [optional], port [optional])
+- `structs_add_field_batch`: Add fields to structs (params: items [list of `{struct, field}`], atomic [optional], port [optional])
+- `structs_update_field_batch`: Update struct fields (params: items [list of `{struct, field_ref, updates}`], atomic [optional], port [optional])
+
 **Project Management** (`project_*`):
 - `project_info`: Get current project information (params: port [optional])
 - `project_list_files`: List files in project (params: folder, recursive, offset, limit, port [optional])

@@ -6,13 +6,11 @@ import eu.starsong.ghidra.hateoas.Paginator;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.ProjectService;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 
 public class ProjectResource implements Resource {
 
@@ -27,12 +25,12 @@ public class ProjectResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/project", ctx -> current(contextFactory.apply(ctx)));
-        app.get("/project/files", ctx -> files(contextFactory.apply(ctx)));
-        app.post("/project/open", ctx -> openFile(contextFactory.apply(ctx)));
-        app.get("/projects", ctx -> listAll(contextFactory.apply(ctx)));
-        app.get("/projects/{name}", ctx -> getByName(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/project", this::current);
+        routes.get("/project/files", this::files);
+        routes.post("/project/open", this::openFile);
+        routes.get("/projects", this::listAll);
+        routes.get("/projects/{name}", this::getByName);
     }
 
     private void listAll(GhidraContext ctx) {

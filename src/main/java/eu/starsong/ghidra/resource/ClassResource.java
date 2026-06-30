@@ -5,12 +5,10 @@ import eu.starsong.ghidra.hateoas.Links;
 import eu.starsong.ghidra.hateoas.Paginator;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.NamespaceService;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.List;
-import java.util.function.Function;
 
 public class ClassResource implements Resource {
 
@@ -25,8 +23,8 @@ public class ClassResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/classes", ctx -> list(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/classes", this::list);
     }
 
     private void list(GhidraContext ctx) {

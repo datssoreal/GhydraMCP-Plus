@@ -3,13 +3,11 @@ package eu.starsong.ghidra.resource;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.ScalarService;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.util.function.Function;
 
 /**
  * Search for scalar (constant) values in instructions: GET /scalars?value=...
@@ -23,8 +21,8 @@ public class ScalarResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/scalars", ctx -> search(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/scalars", this::search);
     }
 
     private void search(GhidraContext ctx) {

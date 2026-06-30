@@ -17,8 +17,7 @@ import eu.starsong.ghidra.util.GhidraSwing;
 import eu.starsong.ghidra.util.GhidraUtil;
 import ghidra.program.model.listing.Function;
 
-import io.javalin.Javalin;
-import io.javalin.http.Context;
+import eu.starsong.ghidra.server.Routes;
 
 import java.util.List;
 import java.util.Map;
@@ -39,25 +38,25 @@ public class FunctionResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, java.util.function.Function<Context, GhidraContext> contextFactory) {
+    public void register(Routes routes) {
         // By-address routes
-        app.get("/functions", ctx -> list(contextFactory.apply(ctx)));
-        app.post("/functions", ctx -> create(contextFactory.apply(ctx)));
-        app.get("/functions/{address}", ctx -> getByAddress(contextFactory.apply(ctx)));
-        app.patch("/functions/{address}", ctx -> update(contextFactory.apply(ctx)));
-        app.delete("/functions/{address}", ctx -> delete(contextFactory.apply(ctx)));
-        app.get("/functions/{address}/decompile", ctx -> decompile(contextFactory.apply(ctx)));
-        app.get("/functions/{address}/disassembly", ctx -> disassembly(contextFactory.apply(ctx)));
-        app.get("/functions/{address}/variables", ctx -> variables(contextFactory.apply(ctx)));
-        app.patch("/functions/{address}/variables/{varName}", ctx -> updateVariable(contextFactory.apply(ctx)));
+        routes.get("/functions", this::list);
+        routes.post("/functions", this::create);
+        routes.get("/functions/{address}", this::getByAddress);
+        routes.patch("/functions/{address}", this::update);
+        routes.delete("/functions/{address}", this::delete);
+        routes.get("/functions/{address}/decompile", this::decompile);
+        routes.get("/functions/{address}/disassembly", this::disassembly);
+        routes.get("/functions/{address}/variables", this::variables);
+        routes.patch("/functions/{address}/variables/{varName}", this::updateVariable);
 
         // By-name routes
-        app.get("/functions/by-name/{name}", ctx -> getByName(contextFactory.apply(ctx)));
-        app.patch("/functions/by-name/{name}", ctx -> updateByName(contextFactory.apply(ctx)));
-        app.delete("/functions/by-name/{name}", ctx -> deleteByName(contextFactory.apply(ctx)));
-        app.get("/functions/by-name/{name}/decompile", ctx -> decompileByName(contextFactory.apply(ctx)));
-        app.get("/functions/by-name/{name}/disassembly", ctx -> disassemblyByName(contextFactory.apply(ctx)));
-        app.get("/functions/by-name/{name}/variables", ctx -> variablesByName(contextFactory.apply(ctx)));
+        routes.get("/functions/by-name/{name}", this::getByName);
+        routes.patch("/functions/by-name/{name}", this::updateByName);
+        routes.delete("/functions/by-name/{name}", this::deleteByName);
+        routes.get("/functions/by-name/{name}/decompile", this::decompileByName);
+        routes.get("/functions/by-name/{name}/disassembly", this::disassemblyByName);
+        routes.get("/functions/by-name/{name}/variables", this::variablesByName);
     }
 
     private void list(GhidraContext ctx) {

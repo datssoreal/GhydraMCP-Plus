@@ -4,14 +4,12 @@ import eu.starsong.ghidra.hateoas.Links;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
+import eu.starsong.ghidra.server.Routes;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 
 /**
  * REST resource for /instances endpoints.
@@ -20,11 +18,11 @@ import java.util.function.Function;
 public class InstanceResource implements Resource {
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/instances", ctx -> list(contextFactory.apply(ctx)));
-        app.get("/instances/{port}", ctx -> getByPort(contextFactory.apply(ctx)));
-        app.post("/registerInstance", ctx -> registerInstance(contextFactory.apply(ctx)));
-        app.post("/unregisterInstance", ctx -> unregisterInstance(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/instances", this::list);
+        routes.get("/instances/{port}", this::getByPort);
+        routes.post("/registerInstance", this::registerInstance);
+        routes.post("/unregisterInstance", this::unregisterInstance);
     }
 
     private void registerInstance(GhidraContext ctx) {

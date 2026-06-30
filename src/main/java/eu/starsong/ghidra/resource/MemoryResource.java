@@ -6,14 +6,12 @@ import eu.starsong.ghidra.hateoas.Paginator;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.MemoryService;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 
 /**
  * REST resource for /memory endpoints.
@@ -27,15 +25,15 @@ public class MemoryResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
+    public void register(Routes routes) {
         // /memory/search must register before /memory/{address}, otherwise Javalin
         // routes "search" as an address literal.
-        app.get("/memory", ctx -> listBlocks(contextFactory.apply(ctx)));
-        app.get("/memory/search", ctx -> searchMemory(contextFactory.apply(ctx)));
-        app.get("/memory/{address}/comments/{type}", ctx -> getComment(contextFactory.apply(ctx)));
-        app.post("/memory/{address}/comments/{type}", ctx -> setComment(contextFactory.apply(ctx)));
-        app.get("/memory/{address}/disassembly", ctx -> disassembly(contextFactory.apply(ctx)));
-        app.get("/memory/{address}", ctx -> readMemory(contextFactory.apply(ctx)));
+        routes.get("/memory", this::listBlocks);
+        routes.get("/memory/search", this::searchMemory);
+        routes.get("/memory/{address}/comments/{type}", this::getComment);
+        routes.post("/memory/{address}/comments/{type}", this::setComment);
+        routes.get("/memory/{address}/disassembly", this::disassembly);
+        routes.get("/memory/{address}", this::readMemory);
     }
 
     private void disassembly(GhidraContext ctx) {

@@ -4,12 +4,10 @@ import eu.starsong.ghidra.api.ApiConstants;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
+import eu.starsong.ghidra.server.Routes;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.function.Function;
 
 /**
  * REST resource for root endpoint and API discovery.
@@ -23,10 +21,10 @@ public class RootResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/", ctx -> root(contextFactory.apply(ctx)));
-        app.get("/info", ctx -> info(contextFactory.apply(ctx)));
-        app.get("/plugin-version", ctx -> version(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/", this::root);
+        routes.get("/info", this::info);
+        routes.get("/plugin-version", this::version);
     }
 
     /**

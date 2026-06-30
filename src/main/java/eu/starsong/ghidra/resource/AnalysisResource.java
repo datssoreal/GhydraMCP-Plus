@@ -6,14 +6,13 @@ import eu.starsong.ghidra.hateoas.Paginator;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.AnalysisService;
 import eu.starsong.ghidra.util.DataFlowUtil;
 import eu.starsong.ghidra.util.GhidraUtil;
 import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.program.model.address.Address;
 import ghidra.util.task.TaskMonitor;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -36,15 +35,15 @@ public class AnalysisResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, java.util.function.Function<Context, GhidraContext> contextFactory) {
-        app.get("/analysis/callgraph", ctx -> callGraph(contextFactory.apply(ctx)));
-        app.get("/analysis/callers/{address}", ctx -> callers(contextFactory.apply(ctx)));
-        app.get("/analysis/callees/{address}", ctx -> callees(contextFactory.apply(ctx)));
-        app.get("/analysis/status", ctx -> status(contextFactory.apply(ctx)));
-        app.post("/analysis/run", ctx -> run(contextFactory.apply(ctx)));
-        app.get("/analysis/dataflow", ctx -> dataflow(contextFactory.apply(ctx)));
-        app.get("/analysis/callpaths", ctx -> callPaths(contextFactory.apply(ctx)));
-        app.get("/analysis/strings/usage", ctx -> stringUsage(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/analysis/callgraph", this::callGraph);
+        routes.get("/analysis/callers/{address}", this::callers);
+        routes.get("/analysis/callees/{address}", this::callees);
+        routes.get("/analysis/status", this::status);
+        routes.post("/analysis/run", this::run);
+        routes.get("/analysis/dataflow", this::dataflow);
+        routes.get("/analysis/callpaths", this::callPaths);
+        routes.get("/analysis/strings/usage", this::stringUsage);
     }
 
     private void status(GhidraContext ctx) {

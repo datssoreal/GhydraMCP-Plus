@@ -6,12 +6,10 @@ import eu.starsong.ghidra.hateoas.Paginator;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.service.XrefService;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.List;
-import java.util.function.Function;
 
 /**
  * REST resource for /xrefs endpoints.
@@ -25,12 +23,12 @@ public class XrefResource implements Resource {
     }
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/xrefs", ctx -> list(contextFactory.apply(ctx)));
-        app.get("/xrefs/to/{address}", ctx -> getRefsTo(contextFactory.apply(ctx)));
-        app.get("/xrefs/from/{address}", ctx -> getRefsFrom(contextFactory.apply(ctx)));
-        app.get("/xrefs/calls/to/{address}", ctx -> getCallsTo(contextFactory.apply(ctx)));
-        app.get("/xrefs/calls/from/{address}", ctx -> getCallsFrom(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/xrefs", this::list);
+        routes.get("/xrefs/to/{address}", this::getRefsTo);
+        routes.get("/xrefs/from/{address}", this::getRefsFrom);
+        routes.get("/xrefs/calls/to/{address}", this::getCallsTo);
+        routes.get("/xrefs/calls/from/{address}", this::getCallsFrom);
     }
 
     /**

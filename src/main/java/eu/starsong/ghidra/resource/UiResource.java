@@ -4,15 +4,13 @@ import eu.starsong.ghidra.dto.FunctionDto;
 import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.server.GhidraContext;
 import eu.starsong.ghidra.server.Resource;
+import eu.starsong.ghidra.server.Routes;
 import eu.starsong.ghidra.util.GhidraSwing;
 import ghidra.app.services.CodeViewerService;
 import ghidra.program.util.ProgramLocation;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.function.Function;
 
 /**
  * Current-UI-state endpoints. /address and /function report the cursor
@@ -21,9 +19,9 @@ import java.util.function.Function;
 public class UiResource implements Resource {
 
     @Override
-    public void register(Javalin app, Function<Context, GhidraContext> contextFactory) {
-        app.get("/address", ctx -> currentAddress(contextFactory.apply(ctx)));
-        app.get("/function", ctx -> currentFunction(contextFactory.apply(ctx)));
+    public void register(Routes routes) {
+        routes.get("/address", this::currentAddress);
+        routes.get("/function", this::currentFunction);
     }
 
     private void currentAddress(GhidraContext ctx) {
