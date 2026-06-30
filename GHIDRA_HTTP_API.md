@@ -954,6 +954,48 @@ wire as hex strings (e.g. `"0x140075000"`); memory payloads as hex byte strings 
 - **`DELETE /emulation/breakpoints/{address}`**: Clear a breakpoint.
 - **`DELETE /emulation`**: Dispose the session and free the emulator.
 
+### 13. Batch
+
+Execute several API operations in a single HTTP roundtrip. Each sub-request is dispatched
+in-process to the same handler the equivalent standalone call would hit (no real HTTP is made),
+so paths, path/query parameters, and request bodies behave identically.
+
+- **`POST /batch`**: Run an array of virtual sub-requests.
+  - Body:
+    ```json
+    {
+      "atomic": false,
+      "requests": [
+        { "method": "GET",   "path": "/functions/by-name/main/decompile" },
+        { "method": "PATCH", "path": "/functions/0x401000", "body": { "name": "parse" } }
+      ]
+    }
+    ```
+    - `requests` (required): array of `{ "method", "path", "body"? }`. `method` is one of
+      `GET|POST|PATCH|PUT|DELETE`; `path` is an existing endpoint path (may include a query
+      string); `body` is optional and only meaningful for methods that take one.
+    - `atomic` (optional, default `false`): see modes below.
+  - `result`: an ordered array, one entry per sub-request, each
+    `{ "index", "status", "success", "body" }` where `body` is the full envelope that endpoint
+    would have returned (or an error envelope). `index` matches the request's position.
+
+  **Best-effort mode (`atomic: false`, default):** every sub-request runs independently and
+  failures are isolated — a 4xx/5xx on one does not stop the others. Each handler manages its
+  own Ghidra transaction, exactly as for a standalone call.
+
+  **Atomic mode (`atomic: true`):** the whole batch runs inside a single Ghidra transaction.
+  On the first sub-request whose `success` is `false`, the transaction is rolled back (reverting
+  every mutation made earlier in the batch) and all remaining sub-requests are reported as
+  `ROLLED_BACK`. Requires a program to be loaded.
+
+  **Batch-specific error codes** (in a sub-request's error `body`):
+  - `NO_ROUTE` (404): no endpoint matches the sub-request's `method`+`path`.
+  - `NO_NESTED_BATCH` (400): a sub-request targets `/batch` (nesting is not allowed).
+  - `ROLLED_BACK` (409): an atomic batch failed earlier; this sub-request was not applied.
+
+  All other per-sub-request errors use the same status/code mapping as the equivalent
+  single call (e.g. `NO_PROGRAM_LOADED`, `BAD_REQUEST`, `NOT_FOUND`).
+
 ## Design Considerations for AI Usage
 
 - **Structured responses**: JSON format ensures predictable parsing by AI agents.

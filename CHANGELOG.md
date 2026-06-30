@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Batch mode:** `POST /batch` executes an array of virtual HTTP sub-requests against
+  existing endpoints in one roundtrip, with best-effort (default) or `atomic` transaction
+  semantics — atomic wraps the whole batch in one Ghidra transaction and rolls back entirely
+  on the first failure. Each result is `{index, status, success, body}`; per-sub-request errors
+  reuse the same `ErrorMapper` mapping as single calls (`NO_ROUTE`, `NO_NESTED_BATCH`,
+  `ROLLED_BACK`). Exposed via the `batch_execute` MCP tool plus named wrappers
+  (`functions_decompile_batch`, `functions_rename_batch`, `data_create_batch`,
+  `data_set_type_batch`, `data_rename_batch`, `structs_add_field_batch`,
+  `structs_update_field_batch`). Plugin → `v3.3.0`, bridge → `v3.4.0` (API_VERSION unchanged — additive).
 - `GET /analysis/callpaths` + `analysis_find_call_paths` tool + `ghydra analysis call-paths`: bounded call-path discovery between two functions.
 - `GET /analysis/strings/usage` + `analysis_trace_string_usage` tool + `ghydra analysis string-usage`: string-usage tracing with an optional reverse-call-graph walk.
 - **Unicorn dynamic emulation:** Python-side [Unicorn Engine](https://www.unicorn-engine.org/) x86-64 emulation (`unicorn_*` MCP tools, `ghydra dynamic` CLI) with lazy page mapping from the Ghidra image — unmapped pages are fetched on demand over the existing `/memory` API, so an agent can emulate code (e.g. an in-binary unpacker) and read back the decrypted bytes without a live debugger. Engine talks to Ghidra through an injected byte-provider, so it is unit-testable with a fake client (no Ghidra required). Optional extra: `pip install ghydramcp[unicorn]`.
