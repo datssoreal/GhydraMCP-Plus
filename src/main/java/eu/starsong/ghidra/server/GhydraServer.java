@@ -1,13 +1,10 @@
 package eu.starsong.ghidra.server;
 
 import eu.starsong.ghidra.api.ApiConstants;
-import eu.starsong.ghidra.hateoas.Response;
 import eu.starsong.ghidra.middleware.CorsHandler;
-import eu.starsong.ghidra.middleware.ErrorHandler;
 import ghidra.framework.plugintool.PluginTool;
 import ghidra.util.Msg;
 import io.javalin.Javalin;
-import io.javalin.http.HttpStatus;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -130,40 +127,28 @@ public class GhydraServer {
     private void configureMiddleware() {
         app.before(new CorsHandler());
 
-        app.exception(GhidraContext.NoProgramException.class, (e, ctx) -> {
-            ctx.status(HttpStatus.SERVICE_UNAVAILABLE);
-            ctx.json(Response.error(ctx, port, "NO_PROGRAM_LOADED", e.getMessage()).build());
-        });
-
-        app.exception(eu.starsong.ghidra.service.ProjectService.NoProjectException.class, (e, ctx) -> {
-            ctx.status(HttpStatus.SERVICE_UNAVAILABLE);
-            ctx.json(Response.error(ctx, port, "NO_PROJECT_OPEN", e.getMessage()).build());
-        });
-
-        app.exception(NotFoundException.class, (e, ctx) -> {
-            ctx.status(HttpStatus.NOT_FOUND);
-            ctx.json(Response.error(ctx, port, e.errorCode(), e.getMessage()).build());
-        });
-
-        app.exception(BadRequestException.class, (e, ctx) -> {
-            ctx.status(HttpStatus.BAD_REQUEST);
-            ctx.json(Response.error(ctx, port, e.errorCode(), e.getMessage()).build());
-        });
-
+        // All exception handlers delegate to ErrorMapper so per-route errors and
+        // /batch sub-request errors (which bypass middleware) share one mapping.
+        app.exception(GhidraContext.NoProgramException.class, this::handleMapped);
+        app.exception(eu.starsong.ghidra.service.ProjectService.NoProjectException.class, this::handleMapped);
+        app.exception(NotFoundException.class, this::handleMapped);
+        app.exception(BadRequestException.class, this::handleMapped);
         // Validation failures conventionally surface as IllegalArgumentException
-        // (bad address, malformed param, etc.); treat them as 400, not 500.
-        app.exception(IllegalArgumentException.class, (e, ctx) -> {
-            ctx.status(HttpStatus.BAD_REQUEST);
-            ctx.json(Response.error(ctx, port, "BAD_REQUEST", e.getMessage()).build());
-        });
+        // (bad address, malformed param, etc.); ErrorMapper treats them as 400.
+        app.exception(IllegalArgumentException.class, this::handleMapped);
+        // Malformed request bodies (bodyAsClass) throw from Gson; client error, not 500.
+        app.exception(com.google.gson.JsonSyntaxException.class, this::handleMapped);
+        app.exception(Exception.class, this::handleMapped);
+    }
 
-        // Malformed request bodies (bodyAsClass) throw from Gson; that's client error, not 500.
-        app.exception(com.google.gson.JsonSyntaxException.class, (e, ctx) -> {
-            ctx.status(HttpStatus.BAD_REQUEST);
-            ctx.json(Response.error(ctx, port, "INVALID_JSON", "Malformed JSON body: " + e.getMessage()).build());
-        });
-
-        app.exception(Exception.class, new ErrorHandler(port));
+    private void handleMapped(Exception e, io.javalin.http.Context ctx) {
+        eu.starsong.ghidra.middleware.ErrorMapper.Mapped m =
+            eu.starsong.ghidra.middleware.ErrorMapper.map(e);
+        if (m.status() >= 500) {
+            ghidra.util.Msg.error(this, "Unhandled exception in " + ctx.path(), e);
+        }
+        ctx.status(io.javalin.http.HttpStatus.forStatus(m.status()));
+        ctx.json(eu.starsong.ghidra.hateoas.Response.error(ctx, port, m.code(), m.message()).build());
     }
 
     private void registerResources() {
