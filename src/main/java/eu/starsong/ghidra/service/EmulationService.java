@@ -13,6 +13,7 @@ import ghidra.util.task.TaskMonitor;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -147,6 +148,7 @@ public class EmulationService {
         long scratchAlloc = 0x10000000L;
         StopReason stopReason = StopReason.READY;
         String lastError = null;
+        EmulationStateDto.WatchHit watchHit = null;
         Session(Program program, EmulatorHelper emu) { 
             this.program = program; 
             this.emu = emu; 
@@ -214,20 +216,58 @@ public class EmulationService {
     }
 
     public EmulationStateDto run(Program program, String untilStr, long maxSteps, boolean trace) {
+        return run(program, untilStr, maxSteps, trace, null, 0);
+    }
+
+    /**
+     * Run the session until {@code untilStr}, a breakpoint, an error, {@code maxSteps}, or
+     * (when {@code watchAddressStr} is given) until the bytes at that address change. The
+     * watch is a before/after snapshot compared after every step -- {@link EmulatorHelper}
+     * has no native memory-write breakpoint, only a write-tracking *set*
+     * ({@code enableMemoryWriteTracking}) with no per-write value or triggering PC, which
+     * this needs.
+     */
+    public EmulationStateDto run(Program program, String untilStr, long maxSteps, boolean trace,
+            String watchAddressStr, int watchLength) {
         Session s = require(program);
         long cap = Math.min(maxSteps <= 0 ? MAX_STEPS_CAP : maxSteps, MAX_STEPS_CAP);
         Address until = untilStr == null || untilStr.isEmpty()
             ? null : GhidraUtil.resolveAddress(program, untilStr);
+        Address watchAddr = watchAddressStr == null || watchAddressStr.isEmpty()
+            ? null : GhidraUtil.resolveAddress(program, watchAddressStr);
+        if (watchAddressStr != null && !watchAddressStr.isEmpty() && watchAddr == null) {
+            throw new IllegalArgumentException("Invalid watch address: " + watchAddressStr);
+        }
+        int watchLen = Math.min(Math.max(watchLength, 1), 4096);
+        s.watchHit = null;
         return GhidraSwing.runRead(() -> {
+            byte[] before = watchAddr != null ? s.emu.readMemory(watchAddr, watchLen) : null;
             for (long i = 0; i < cap; i++) {
                 Address pc = s.emu.getExecutionAddress();
                 if (until != null && pc != null && pc.equals(until)) { s.stopReason = StopReason.TARGET_REACHED; break; }
                 if (trace && s.trace.size() < MAX_TRACE && pc != null) s.trace.add(pc.toString());
                 if (!stepOnce(s)) break;
+                if (watchAddr != null) {
+                    byte[] after = s.emu.readMemory(watchAddr, watchLen);
+                    if (!Arrays.equals(before, after)) {
+                        s.stopReason = StopReason.WATCHPOINT;
+                        s.watchHit = new EmulationStateDto.WatchHit(
+                            watchAddr.toString(), watchLen, toHexString(before), toHexString(after),
+                            pc != null ? pc.toString() : null);
+                        break;
+                    }
+                    before = after;
+                }
                 if (i == cap - 1) s.stopReason = StopReason.MAX_STEPS;
             }
             return snapshot(program, s, trace);
         });
+    }
+
+    private static String toHexString(byte[] data) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : data) sb.append(String.format("%02x", b & 0xff));
+        return sb.toString();
     }
 
     public EmulationStateDto step(Program program, long count, boolean trace) {
@@ -528,10 +568,11 @@ public class EmulationService {
         // Only surface lastError when we are actually in an error state, so a stale message
         // from the emulator can't make a healthy READY/STEPPED snapshot look faulted.
         String err = s.stopReason == StopReason.ERROR ? s.lastError : null;
+        EmulationStateDto.WatchHit wh = s.stopReason == StopReason.WATCHPOINT ? s.watchHit : null;
         return EmulationStateDto.of(
             pc != null ? pc.toString() : null,
             s.stopReason, s.steps, regs,
             includeTrace ? new ArrayList<>(s.trace) : List.of(),
-            err);
+            err, null, wh);
     }
 }

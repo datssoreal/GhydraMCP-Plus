@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.4.2] - 2026-07-01
+
+### Added
+- **PCode watchpoints:** `emulation_run` now accepts `watch_address` and `watch_length` to run until memory at that address changes, returning `WATCHPOINT` stop reason and `{before, after, writePc}` details. 
+- **Auto stack:** `emulation_reset` now defaults `auto_stack=True`, allocating a stack and initializing RSP to point into it.
+
 ## [3.4.1] - 2026-07-01
 
 ### Fixed

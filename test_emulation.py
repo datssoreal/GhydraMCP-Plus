@@ -64,6 +64,24 @@ class EmulationTests(unittest.TestCase):
         r = requests.get(f"{URL}/emulation/state")
         self.assertIn(r.status_code, (404, 503))
 
+    def test_watchpoint_stops_on_write(self):
+        # mov rax, <addr>; mov byte [rax], 0x41; ret -- a self-contained 14-byte stub
+        # that writes one byte to an address we choose, independent of the loaded binary.
+        target = self.entry  # reuse the already-mapped entry-point page as scratch
+        write_addr_int = int(target, 16) + 0x40
+        shellcode = ("48b8" + write_addr_int.to_bytes(8, "little").hex()
+                     + "c60041" + "c3")
+        _json(requests.post(f"{URL}/emulation/reset",
+                            json={"start": self.entry, "auto_stack": True}))
+        _json(requests.post(f"{URL}/emulation/memory",
+                            json={"address": self.entry, "hex": shellcode}))
+        run = _json(requests.post(f"{URL}/emulation/run", json={
+            "max_steps": 10, "watch_address": hex(write_addr_int), "watch_length": 1}))
+        self.assertTrue(run.get("success"))
+        self.assertEqual("WATCHPOINT", run["result"]["stopReason"])
+        self.assertEqual("41", run["result"]["watchHit"]["after"])
+        self.assertEqual("00", run["result"]["watchHit"]["before"])
+
     def tearDown(self):
         try:
             requests.delete(f"{URL}/emulation", timeout=2)

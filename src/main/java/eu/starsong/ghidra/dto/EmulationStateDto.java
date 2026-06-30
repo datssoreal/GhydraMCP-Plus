@@ -11,7 +11,8 @@ public record EmulationStateDto(
         Map<String, String> registers,
         List<String> trace,
         String lastError,
-        String detail) {
+        String detail,
+        WatchHit watchHit) {
 
     /**
      * Why an emulation session is in its current state. Serializes to its enum name
@@ -33,16 +34,27 @@ public record EmulationStateDto(
         /** Execution stopped due to a hook trap */
         HOOK_TRAP,
         /** Unmapped memory access */
-        UNMAPPED
+        UNMAPPED,
+        /** {@code run} stopped because the watched memory region changed; see {@code watchHit}. */
+        WATCHPOINT
     }
+
+    /** A memory write detected by an active {@code run} watchpoint. */
+    public record WatchHit(String address, int length, String before, String after, String writePc) {}
 
     public static EmulationStateDto of(String pc, StopReason stopReason, long steps,
             Map<String, String> registers, List<String> trace, String lastError) {
-        return new EmulationStateDto(pc, stopReason, steps, registers, trace, lastError, null);
+        return new EmulationStateDto(pc, stopReason, steps, registers, trace, lastError, null, null);
     }
 
     public static EmulationStateDto of(String pc, StopReason stopReason, long steps,
             Map<String, String> registers, List<String> trace, String lastError, String detail) {
-        return new EmulationStateDto(pc, stopReason, steps, registers, trace, lastError, detail);
+        return new EmulationStateDto(pc, stopReason, steps, registers, trace, lastError, detail, null);
+    }
+
+    public static EmulationStateDto of(String pc, StopReason stopReason, long steps,
+            Map<String, String> registers, List<String> trace, String lastError, String detail,
+            WatchHit watchHit) {
+        return new EmulationStateDto(pc, stopReason, steps, registers, trace, lastError, detail, watchHit);
     }
 }

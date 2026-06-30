@@ -3372,13 +3372,26 @@ def emulation_reset(start: str, registers: dict | None = None,
 @mcp.tool()
 @text_output
 def emulation_run(until: str | None = None, max_steps: int = 100000,
-                  trace: bool = False, port: int | None = None) -> dict:
-    """Run the emulation session until an address, a breakpoint, an error, or max_steps.
+                  trace: bool = False, watch_address: str | None = None,
+                  watch_length: int = 0, port: int | None = None) -> dict:
+    """Run the emulation session until an address, a breakpoint, an error, max_steps,
+    or (with watch_address) until that memory region's bytes change.
+
+    A watchpoint is the fast way to find "who writes buffer X": skip
+    instruction-level trace=True tracing of a whole unpacking stub and just
+    run straight to the write. On a watchpoint hit, result.watchHit carries
+    {address, length, before, after, writePc} -- writePc is the instruction
+    that performed the write.
 
     Args:
         until: Optional stop address in hex
         max_steps: Hard step cap (default 100000, server caps at 5000000)
         trace: When true, returns the list of executed instruction addresses
+        watch_address: Optional hex address; run stops as soon as the bytes at
+            this address (length watch_length) change from their value when
+            this call started
+        watch_length: Number of bytes to watch (default 1 when watch_address is set,
+            server caps at 4096)
         port: Specific Ghidra instance port (optional)
 
     Returns:
@@ -3388,6 +3401,9 @@ def emulation_run(until: str | None = None, max_steps: int = 100000,
     body: dict = {"max_steps": max_steps, "trace": trace}
     if until:
         body["until"] = until
+    if watch_address:
+        body["watch_address"] = watch_address
+        body["watch_length"] = watch_length or 1
     return simplify_response(safe_post(port, "emulation/run", body))
 
 

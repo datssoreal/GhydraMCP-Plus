@@ -18,4 +18,17 @@ public class EmulationStateDtoTest {
         assertEquals("0x140075000", dto.registers().get("RIP"));
         assertEquals(2, dto.trace().size());
     }
+
+    @Test
+    public void ofWithWatchHitPopulatesAllFields() {
+        EmulationStateDto.WatchHit hit = new EmulationStateDto.WatchHit(
+            "0x223018", 4, "00000000", "deadbeef", "0x140001010");
+        EmulationStateDto dto = EmulationStateDto.of(
+            "0x140001012", StopReason.WATCHPOINT, 7L,
+            Map.of("RIP", "0x140001012"), List.of(), null, null, hit);
+        assertEquals(StopReason.WATCHPOINT, dto.stopReason());
+        assertEquals("0x223018", dto.watchHit().address());
+        assertEquals("deadbeef", dto.watchHit().after());
+        assertEquals("0x140001010", dto.watchHit().writePc());
+    }
 }

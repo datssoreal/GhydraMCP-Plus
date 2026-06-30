@@ -65,7 +65,8 @@ public class EmulationResource implements Resource {
         var program = ctx.requireProgram();
         RunRequest req = ctx.bodyAsClass(RunRequest.class);
         if (req == null) req = new RunRequest();
-        respond(ctx, service.run(program, req.until, req.max_steps, req.trace));
+        respond(ctx, service.run(program, req.until, req.max_steps, req.trace,
+                                 req.watch_address, req.watch_length));
     }
 
     private void step(GhidraContext ctx) {
@@ -195,7 +196,10 @@ public class EmulationResource implements Resource {
         public List<Map<String, String>> memory;
         public boolean auto_stack;
     }
-    private static class RunRequest { public String until; public long max_steps; public boolean trace; }
+    private static class RunRequest {
+        public String until; public long max_steps; public boolean trace;
+        public String watch_address; public int watch_length;
+    }
     private static class StepRequest { public long count; public boolean trace; }
     private static class RegisterRequest { public String name; public String value; }
     private static class MemoryRequest { public String address; public String hex; }
