@@ -56,3 +56,26 @@ def test_format_batch_results_renders_table():
     out = b.format_batch_results(response)
     assert "0" in out and "200" in out and "ok" in out
     assert "1" in out and "400" in out and "BAD_REQUEST" in out
+
+
+def test_batch_wrappers_have_formatters_registered():
+    # Mutation wrappers summarize as the batch table; decompile prints code.
+    for name in ["batch_execute", "functions_rename_batch", "data_create_batch",
+                 "data_set_type_batch", "data_rename_batch", "structs_add_field_batch",
+                 "structs_update_field_batch"]:
+        assert b.FORMATTERS.get(name) is b.format_batch_results, name
+    assert b.FORMATTERS.get("functions_decompile_batch") is b.format_batch_decompile
+
+
+def test_format_batch_decompile_renders_code_and_errors():
+    response = {"success": True, "result": [
+        {"index": 0, "status": 200, "success": True, "body": {"success": True, "result": {
+            "functionName": "main", "functionAddress": "0x401000",
+            "decompilation": "int main(void) {\n  return 0;\n}"}}},
+        {"index": 1, "status": 404, "success": False,
+         "body": {"error": {"code": "FUNCTION_NOT_FOUND", "message": "no such fn"}}},
+    ]}
+    out = b.format_batch_decompile(response)
+    assert "main" in out and "0x401000" in out
+    assert "int main(void)" in out and "return 0;" in out
+    assert "1" in out and "FUNCTION_NOT_FOUND" in out

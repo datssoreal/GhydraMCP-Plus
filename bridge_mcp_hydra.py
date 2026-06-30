@@ -1029,6 +1029,35 @@ def format_batch_results(response: dict, **kwargs) -> str:
     return "\n".join(lines)
 
 
+def format_batch_decompile(response: dict, **kwargs) -> str:
+    """Format a functions_decompile_batch response: the decompiled code per function."""
+    if not response.get("success", False):
+        return format_error(response)
+    items = response.get("result", [])
+    if not items:
+        return "Batch decompile: 0 function(s)."
+    ok = sum(1 for it in items if it.get("success"))
+    blocks = [f"Batch decompile: {len(items)} function(s), {ok} ok, {len(items) - ok} failed"]
+    for it in items:
+        idx = it.get("index", "?")
+        body = it.get("body") if isinstance(it.get("body"), dict) else {}
+        if it.get("success"):
+            inner = body.get("result", {}) if isinstance(body.get("result"), dict) else {}
+            name = inner.get("functionName", "?")
+            addr = inner.get("functionAddress", "?")
+            code = inner.get("decompilation") or inner.get("ccode") or inner.get("decompiled") or ""
+            header = f"// [{idx}] {name} @ {addr}"
+            if not code and inner.get("success") is False:
+                blocks.append(f"{header}\n// decompilation failed: {inner.get('errorMessage', 'unknown error')}")
+            else:
+                blocks.append(f"{header}\n{code}")
+        else:
+            err = body.get("error") or {}
+            blocks.append(f"// [{idx}] FAILED status={it.get('status', '?')} "
+                          f"{err.get('code', 'error')}: {err.get('message', '')}")
+    return "\n\n".join(blocks)
+
+
 def format_structs_list(response: dict, offset: int = 0, **kwargs) -> str:
     """Format struct list as plain text"""
     if not response.get("success", False):
@@ -1367,6 +1396,13 @@ FORMATTERS = {
     "analysis_find_call_paths": format_call_paths,
     "analysis_trace_string_usage": format_string_usage,
     "batch_execute": format_batch_results,
+    "functions_decompile_batch": format_batch_decompile,
+    "functions_rename_batch": format_batch_results,
+    "data_create_batch": format_batch_results,
+    "data_set_type_batch": format_batch_results,
+    "data_rename_batch": format_batch_results,
+    "structs_add_field_batch": format_batch_results,
+    "structs_update_field_batch": format_batch_results,
 }
 
 
