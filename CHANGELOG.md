@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.4.1] - 2026-07-01
+
+### Fixed
+- **`emulation_*`/`unicorn_*` tools silently returned `"Done"` instead of real data.** The
+  `text_output` decorator falls back to a bare success message for any tool with no entry in
+  `FORMATTERS`; none of the 26 dynamic-emulation tools (`emulation_reset/run/step/state/
+  read_register/read_memory/...`, `unicorn_reset/run/get_state/read_memory/...`) had one, so
+  every call discarded its pc/registers/stop-reason/hex-bytes/trace payload and returned the
+  literal string `"Done"` — making the whole dynamic-analysis layer unusable from an MCP client
+  even when the underlying emulation worked correctly. Added `format_dynamic_state` (renders
+  nested registers/trace/mem_writes) and registered it for all 26 tools.
+- **`batch_execute` dropped sub-response bodies.** `format_batch_results` rendered each
+  sub-request as `idx/status/"ok"`, discarding the actual JSON body — the only way to read a raw
+  GET endpoint (e.g. `/emulation/state`) in one round trip. Successful sub-requests now include
+  their response body in the table.
+- Root-caused from an external RE session report: an agent driving the dynamic-analysis tools
+  against a packed binary got `"Done"` from every `emulation_*`/`unicorn_*` call and concluded
+  the engines were non-functional. Bridge → `v3.4.1` (API_VERSION unchanged — bridge-only
+  formatting fix, no wire-format change).
+
 ## [3.4.0-rc.1] - 2026-06-30
 
 ### Added

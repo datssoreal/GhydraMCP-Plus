@@ -62,7 +62,7 @@ DEFAULT_GHIDRA_HOST = "localhost"
 QUICK_DISCOVERY_RANGE = range(DEFAULT_GHIDRA_PORT, DEFAULT_GHIDRA_PORT+10)
 FULL_DISCOVERY_RANGE = range(DEFAULT_GHIDRA_PORT, DEFAULT_GHIDRA_PORT+20)
 
-BRIDGE_VERSION = "v3.4.0"
+BRIDGE_VERSION = "v3.4.1"
 REQUIRED_API_VERSION = 3000
 
 DEFAULT_TIMEOUT = int(os.environ.get("GHIDRA_TIMEOUT", "900"))
@@ -1008,7 +1008,13 @@ def format_string_usage(response: dict, **kwargs) -> str:
 
 
 def format_batch_results(response: dict, **kwargs) -> str:
-    """Format a batch_execute response as a compact table."""
+    """Format a batch_execute response as a compact table.
+
+    Each row also gets the sub-response body on a following line for
+    successful requests -- batch_execute is the only way to read a raw
+    endpoint (e.g. GET /emulation/state) in one round trip, so collapsing
+    every body down to "ok" would throw away the actual answer.
+    """
     if not response.get("success", False):
         return format_error(response)
     items = response.get("result", [])
@@ -1020,12 +1026,20 @@ def format_batch_results(response: dict, **kwargs) -> str:
     for it in items:
         idx = it.get("index", "?")
         status = it.get("status", "?")
+        body = it.get("body") if isinstance(it.get("body"), dict) else {}
         if it.get("success"):
             note = "ok"
         else:
-            err = (it.get("body") or {}).get("error", {})
+            err = body.get("error", {})
             note = err.get("code", "error")
         lines.append(f"  {idx:>3}  {status:>6}  {note}")
+        if it.get("success"):
+            payload = body.get("result", body)
+            if isinstance(payload, dict):
+                payload = {k: v for k, v in payload.items()
+                          if k not in ("_links", "success", "timestamp")}
+            if payload:
+                lines.append(f"       body: {payload}")
     return "\n".join(lines)
 
 
@@ -1157,6 +1171,50 @@ def format_generic_dict(response: dict, **kwargs) -> str:
             continue
         lines.append(f"{k}: {v}")
     return "\n".join(lines)
+
+
+_DYNAMIC_STATE_SKIP_KEYS = {"_links", "success", "timestamp", "id", "instance"}
+
+
+def format_dynamic_state(response: dict, **kwargs) -> str:
+    """Format an emulation_*/unicorn_* result as key-value pairs.
+
+    Unlike mutation tools (rename, comment, etc.) where "Done" is the whole
+    answer, these tools' payload (pc, registers, stop reason, hex bytes,
+    trace) IS the answer -- it must reach the caller, not collapse to "Done".
+    Handles the nested {"result": {...}} shape used by emulation_* (passed
+    through simplify_response) and the flat dicts unicorn_* builds directly.
+    """
+    if not response.get("success", False):
+        return format_error(response)
+
+    result = response.get("result", response)
+    if not isinstance(result, dict):
+        return str(result)
+
+    lines = []
+    for k, v in result.items():
+        if k in _DYNAMIC_STATE_SKIP_KEYS:
+            continue
+        if isinstance(v, dict):
+            if not v:
+                lines.append(f"{k}: {{}}")
+                continue
+            lines.append(f"{k}:")
+            for sub_k, sub_v in v.items():
+                lines.append(f"  {sub_k}: {sub_v}")
+        elif isinstance(v, list):
+            if not v:
+                lines.append(f"{k}: []")
+            elif all(not isinstance(item, (dict, list)) for item in v):
+                lines.append(f"{k} ({len(v)}): {v}")
+            else:
+                lines.append(f"{k} ({len(v)}):")
+                for item in v:
+                    lines.append(f"  {item}")
+        else:
+            lines.append(f"{k}: {v}")
+    return "\n".join(lines) if lines else "(empty result)"
 
 
 def format_generic_list(response: dict, **kwargs) -> str:
@@ -1403,6 +1461,32 @@ FORMATTERS = {
     "data_rename_batch": format_batch_results,
     "structs_add_field_batch": format_batch_results,
     "structs_update_field_batch": format_batch_results,
+    "emulation_reset": format_dynamic_state,
+    "emulation_run": format_dynamic_state,
+    "emulation_step": format_dynamic_state,
+    "emulation_state": format_dynamic_state,
+    "emulation_read_register": format_dynamic_state,
+    "emulation_write_register": format_dynamic_state,
+    "emulation_read_memory": format_dynamic_state,
+    "emulation_write_memory": format_dynamic_state,
+    "emulation_set_breakpoint": format_dynamic_state,
+    "emulation_clear_breakpoint": format_dynamic_state,
+    "emulation_hook_set": format_dynamic_state,
+    "emulation_hook_clear": format_dynamic_state,
+    "emulation_hook_list": format_dynamic_state,
+    "emulation_call": format_dynamic_state,
+    "emulation_dispose": format_dynamic_state,
+    "unicorn_reset": format_dynamic_state,
+    "unicorn_run": format_dynamic_state,
+    "unicorn_read_memory": format_dynamic_state,
+    "unicorn_set_register": format_dynamic_state,
+    "unicorn_map": format_dynamic_state,
+    "unicorn_get_state": format_dynamic_state,
+    "unicorn_dispose": format_dynamic_state,
+    "unicorn_hook_set": format_dynamic_state,
+    "unicorn_hook_clear": format_dynamic_state,
+    "unicorn_hook_list": format_dynamic_state,
+    "unicorn_call": format_dynamic_state,
 }
 
 
