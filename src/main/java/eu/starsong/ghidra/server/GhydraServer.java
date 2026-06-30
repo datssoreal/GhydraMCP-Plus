@@ -158,7 +158,7 @@ public class GhydraServer {
         }
         // Auto-register the batch pipeline last so every other route is already
         // present in the registry (BatchResource only needs the registry instance).
-        // new eu.starsong.ghidra.resource.BatchResource(routeRegistry).register(routes);
+        new eu.starsong.ghidra.resource.BatchResource(routeRegistry).register(routes);
     }
 
     /**
