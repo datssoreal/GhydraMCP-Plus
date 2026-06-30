@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [3.4.0-rc.1] - 2026-06-30
 
 ### Added
 - **Batch mode:** `POST /batch` executes an array of virtual HTTP sub-requests against
@@ -178,7 +178,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Initial project setup
 - Basic MCP bridge functionality
 
-[unreleased]: https://github.com/starsong-consulting/GhydraMCP/compare/v3.0.0-rc.1...HEAD
+[3.4.0-rc.1]: https://github.com/datssoreal/GhydraMCP/compare/v3.0.0-rc.1...v3.4.0-rc.1
 [3.0.0-rc.1]: https://github.com/starsong-consulting/GhydraMCP/compare/v3.0.0-beta...v3.0.0-rc.1
 [2.0.0]: https://github.com/teal-bauer/GhydraMCP/compare/v1.4.0...v2.0.0
 [1.4.0]: https://github.com/teal-bauer/GhydraMCP/compare/v1.3.0...v1.4.0
