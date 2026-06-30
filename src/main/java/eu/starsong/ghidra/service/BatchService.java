@@ -9,6 +9,7 @@ import eu.starsong.ghidra.server.RouteRegistry;
 import eu.starsong.ghidra.server.SyntheticGhidraContext;
 import eu.starsong.ghidra.util.TransactionHelper;
 import ghidra.program.model.listing.Program;
+import ghidra.util.Msg;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -60,14 +61,15 @@ public class BatchService {
                 return out;
             });
         } catch (TransactionHelper.TransactionException e) {
-            // TransactionHelper catches every exception thrown inside the operation
-            // (including our AbortBatch), rolls the transaction back, and re-throws it
-            // wrapped as the *cause* of a TransactionException. So AbortBatch never
-            // propagates directly -- recover it (and its partial results) from the
-            // cause here. Anything else is a genuine transaction failure.
+            // dispatch() is total, so the operation's only escape is our AbortBatch (a
+            // RuntimeException). TransactionHelper rolls the transaction back and re-throws
+            // it wrapped as the *cause* of a TransactionException, so recover AbortBatch
+            // (and its partial results) from the cause here. Any other cause is a genuine
+            // commit/transaction failure.
             if (e.getCause() instanceof AbortBatch ab) {
                 return ab.results;          // transaction already rolled back by the throw
             }
+            Msg.error(BatchService.class, "Atomic batch transaction failed", e);
             throw new RuntimeException("Batch transaction failed: " + e.getMessage(), e);
         }
     }
@@ -80,15 +82,21 @@ public class BatchService {
         if (req.path.equals("/batch") || req.path.startsWith("/batch?")) {
             return error(index, 400, "NO_NESTED_BATCH", "Nested /batch is not allowed");
         }
-        RouteRegistry.Match m = registry.match(req.method, req.path);
-        if (m == null) {
-            return error(index, 404, "NO_ROUTE", "No route for " + req.method + " " + req.path);
-        }
-        String bodyJson = req.body == null ? "{}" : GSON.toJson(req.body);
-        SyntheticGhidraContext sctx = new SyntheticGhidraContext(
-            ctx.tool(), ctx.port(), ctx.activeInstances(),
-            req.method, req.path, m.pathParams(), m.queryParams(), bodyJson);
+        // Everything below can throw on bad input -- RouteRegistry.match() URL-decodes the
+        // path (a malformed % escape throws IllegalArgumentException) and GSON.toJson()
+        // serializes the body -- or inside the handler. Keep it ALL in one try so dispatch()
+        // is total: it always returns a result and never lets an exception escape. That is
+        // what makes best-effort isolation hold and lets the atomic loop rely on AbortBatch
+        // being the operation's only escape path.
         try {
+            RouteRegistry.Match m = registry.match(req.method, req.path);
+            if (m == null) {
+                return error(index, 404, "NO_ROUTE", "No route for " + req.method + " " + req.path);
+            }
+            String bodyJson = req.body == null ? "{}" : GSON.toJson(req.body);
+            SyntheticGhidraContext sctx = new SyntheticGhidraContext(
+                ctx.tool(), ctx.port(), ctx.activeInstances(),
+                req.method, req.path, m.pathParams(), m.queryParams(), bodyJson);
             m.handler().accept(sctx);
             int status = sctx.capturedStatus();
             Map<String, Object> r = new LinkedHashMap<>();
@@ -99,6 +107,10 @@ public class BatchService {
             return r;
         } catch (Exception e) {
             ErrorMapper.Mapped mapped = ErrorMapper.map(e);
+            if (mapped.status() >= 500) {
+                Msg.error(BatchService.class, "Batch sub-request [" + index + "] "
+                    + req.method + " " + req.path + " failed", e);
+            }
             return error(index, mapped.status(), mapped.code(), mapped.message());
         }
     }
