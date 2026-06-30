@@ -79,3 +79,29 @@ def test_format_batch_decompile_renders_code_and_errors():
     assert "main" in out and "0x401000" in out
     assert "int main(void)" in out and "return 0;" in out
     assert "1" in out and "FUNCTION_NOT_FOUND" in out
+
+
+def test_rename_batch_missing_key_returns_error():
+    # missing "old" -> structured error string, not a raw KeyError
+    out = b.functions_rename_batch([{"new": "parse"}])
+    assert isinstance(out, str)
+    assert "old" in out
+
+
+def test_batch_wrapper_handles_no_instance(monkeypatch):
+    def boom(p=None):
+        raise ValueError("No active Ghidra instance on port 8192")
+    monkeypatch.setattr(b, "_get_instance_port", boom)
+    out = b.functions_rename_batch([{"old": "a", "new": "b"}])
+    assert isinstance(out, str)
+    assert "instance" in out.lower()
+
+
+def test_rename_batch_threads_atomic_flag(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(b, "_get_instance_port", lambda p=None: 8192)
+    monkeypatch.setattr(b, "safe_post",
+                        lambda port, ep, payload: captured.update(payload) or {"success": True, "result": []})
+    b.functions_rename_batch([{"old": "a", "new": "b"}], atomic=True)
+    assert captured["atomic"] is True
+

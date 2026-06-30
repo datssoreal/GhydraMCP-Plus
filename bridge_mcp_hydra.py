@@ -2797,6 +2797,35 @@ def functions_rename(old_name: str | None = None, address: str | None = None, ne
     return simplify_response(response)
 
 
+def _port_or_error(port: int | None) -> tuple[int | None, dict | None]:
+    """Resolve the target instance port. Returns (port, None) on success or
+    (None, error_dict) when no live instance is available, so batch tools surface a
+    structured error instead of letting _get_instance_port's ValueError escape raw."""
+    try:
+        return _get_instance_port(port), None
+    except ValueError as e:
+        return None, {
+            "success": False,
+            "error": {"code": "NO_INSTANCE", "message": str(e)},
+            "timestamp": int(time.time() * 1000),
+        }
+
+
+def _safe_build(build) -> tuple[list | None, dict | None]:
+    """Run a sub-request builder, converting malformed-input errors (a list item missing a
+    required key, or not a dict) into a structured MISSING_PARAMETER error instead of a raw
+    KeyError/TypeError. Returns (requests, None) or (None, error_dict)."""
+    try:
+        return build(), None
+    except (KeyError, TypeError) as e:
+        return None, {
+            "success": False,
+            "error": {"code": "MISSING_PARAMETER",
+                      "message": f"Malformed batch item (missing or invalid key {e})"},
+            "timestamp": int(time.time() * 1000),
+        }
+
+
 @mcp.tool()
 @text_output
 def batch_execute(requests: list[dict], atomic: bool = False, port: int | None = None) -> dict:
@@ -2824,7 +2853,9 @@ def batch_execute(requests: list[dict], atomic: bool = False, port: int | None =
             "error": {"code": "MISSING_PARAMETER", "message": "requests list is required and must be non-empty"},
             "timestamp": int(time.time() * 1000),
         }
-    port = _get_instance_port(port)
+    port, err = _port_or_error(port)
+    if err:
+        return err
     payload = {"atomic": atomic, "requests": requests}
     response = safe_post(port, "batch", payload)
     return simplify_response(response)
@@ -2838,7 +2869,9 @@ def _run_batch(requests: list[dict], atomic: bool, port: int | None) -> dict:
             "error": {"code": "MISSING_PARAMETER", "message": "input list is required and must be non-empty"},
             "timestamp": int(time.time() * 1000),
         }
-    port = _get_instance_port(port)
+    port, err = _port_or_error(port)
+    if err:
+        return err
     response = safe_post(port, "batch", {"atomic": atomic, "requests": requests})
     return simplify_response(response)
 
@@ -2847,7 +2880,10 @@ def _run_batch(requests: list[dict], atomic: bool, port: int | None) -> dict:
 @text_output
 def functions_decompile_batch(names: list[str], port: int | None = None) -> dict:
     """Decompile multiple functions in one request. names: fully-qualified names."""
-    reqs = [{"method": "GET", "path": f"/functions/by-name/{quote(n)}/decompile"} for n in names]
+    reqs, err = _safe_build(lambda: [
+        {"method": "GET", "path": f"/functions/by-name/{quote(n)}/decompile"} for n in names])
+    if err:
+        return err
     return _run_batch(reqs, False, port)
 
 
@@ -2855,8 +2891,11 @@ def functions_decompile_batch(names: list[str], port: int | None = None) -> dict
 @text_output
 def functions_rename_batch(renames: list[dict], atomic: bool = False, port: int | None = None) -> dict:
     """Rename multiple functions. renames: list of {"old": <fqn>, "new": <fqn>}."""
-    reqs = [{"method": "PATCH", "path": f"/functions/by-name/{quote(r['old'])}", "body": {"name": r["new"]}}
-            for r in renames]
+    reqs, err = _safe_build(lambda: [
+        {"method": "PATCH", "path": f"/functions/by-name/{quote(r['old'])}", "body": {"name": r["new"]}}
+        for r in renames])
+    if err:
+        return err
     return _run_batch(reqs, atomic, port)
 
 
@@ -2864,7 +2903,9 @@ def functions_rename_batch(renames: list[dict], atomic: bool = False, port: int 
 @text_output
 def data_create_batch(items: list[dict], atomic: bool = False, port: int | None = None) -> dict:
     """Create multiple data items. items: list of {"address", "type", "name"?}."""
-    reqs = [{"method": "POST", "path": "/data", "body": it} for it in items]
+    reqs, err = _safe_build(lambda: [{"method": "POST", "path": "/data", "body": it} for it in items])
+    if err:
+        return err
     return _run_batch(reqs, atomic, port)
 
 
@@ -2872,8 +2913,11 @@ def data_create_batch(items: list[dict], atomic: bool = False, port: int | None 
 @text_output
 def data_set_type_batch(items: list[dict], atomic: bool = False, port: int | None = None) -> dict:
     """Set type on multiple data items. items: list of {"address", "type"}."""
-    reqs = [{"method": "PATCH", "path": f"/data/{quote(it['address'])}", "body": {"type": it["type"]}}
-            for it in items]
+    reqs, err = _safe_build(lambda: [
+        {"method": "PATCH", "path": f"/data/{quote(it['address'])}", "body": {"type": it["type"]}}
+        for it in items])
+    if err:
+        return err
     return _run_batch(reqs, atomic, port)
 
 
@@ -2881,8 +2925,11 @@ def data_set_type_batch(items: list[dict], atomic: bool = False, port: int | Non
 @text_output
 def data_rename_batch(items: list[dict], atomic: bool = False, port: int | None = None) -> dict:
     """Rename multiple data items. items: list of {"address", "name"}."""
-    reqs = [{"method": "PATCH", "path": f"/data/{quote(it['address'])}", "body": {"name": it["name"]}}
-            for it in items]
+    reqs, err = _safe_build(lambda: [
+        {"method": "PATCH", "path": f"/data/{quote(it['address'])}", "body": {"name": it["name"]}}
+        for it in items])
+    if err:
+        return err
     return _run_batch(reqs, atomic, port)
 
 
@@ -2891,8 +2938,11 @@ def data_rename_batch(items: list[dict], atomic: bool = False, port: int | None 
 def structs_add_field_batch(items: list[dict], atomic: bool = False, port: int | None = None) -> dict:
     """Add fields to structs. items: list of {"struct", "field": {...}} matching the
     single structs_add_field body shape."""
-    reqs = [{"method": "POST", "path": f"/structs/{quote(it['struct'])}/fields", "body": it.get("field", {})}
-            for it in items]
+    reqs, err = _safe_build(lambda: [
+        {"method": "POST", "path": f"/structs/{quote(it['struct'])}/fields", "body": it.get("field", {})}
+        for it in items])
+    if err:
+        return err
     return _run_batch(reqs, atomic, port)
 
 
@@ -2900,8 +2950,11 @@ def structs_add_field_batch(items: list[dict], atomic: bool = False, port: int |
 @text_output
 def structs_update_field_batch(items: list[dict], atomic: bool = False, port: int | None = None) -> dict:
     """Update struct fields. items: list of {"struct", "field_ref", "updates": {...}}."""
-    reqs = [{"method": "PATCH", "path": f"/structs/{quote(it['struct'])}/fields/{quote(str(it['field_ref']))}",
-             "body": it.get("updates", {})} for it in items]
+    reqs, err = _safe_build(lambda: [
+        {"method": "PATCH", "path": f"/structs/{quote(it['struct'])}/fields/{quote(str(it['field_ref']))}",
+         "body": it.get("updates", {})} for it in items])
+    if err:
+        return err
     return _run_batch(reqs, atomic, port)
 
 
