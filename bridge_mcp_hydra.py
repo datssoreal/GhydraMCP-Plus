@@ -62,7 +62,7 @@ DEFAULT_GHIDRA_HOST = "localhost"
 QUICK_DISCOVERY_RANGE = range(DEFAULT_GHIDRA_PORT, DEFAULT_GHIDRA_PORT+10)
 FULL_DISCOVERY_RANGE = range(DEFAULT_GHIDRA_PORT, DEFAULT_GHIDRA_PORT+20)
 
-BRIDGE_VERSION = "v3.3.1"
+BRIDGE_VERSION = "v3.4.0"
 REQUIRED_API_VERSION = 3000
 
 DEFAULT_TIMEOUT = int(os.environ.get("GHIDRA_TIMEOUT", "900"))
@@ -1007,6 +1007,28 @@ def format_string_usage(response: dict, **kwargs) -> str:
     return "\n".join(lines)
 
 
+def format_batch_results(response: dict, **kwargs) -> str:
+    """Format a batch_execute response as a compact table."""
+    if not response.get("success", False):
+        return format_error(response)
+    items = response.get("result", [])
+    if not items:
+        return "Batch: 0 sub-requests."
+    ok = sum(1 for it in items if it.get("success"))
+    lines = [f"Batch: {len(items)} sub-request(s), {ok} ok, {len(items) - ok} failed", ""]
+    lines.append(f"  {'idx':>3}  {'status':>6}  result")
+    for it in items:
+        idx = it.get("index", "?")
+        status = it.get("status", "?")
+        if it.get("success"):
+            note = "ok"
+        else:
+            err = (it.get("body") or {}).get("error", {})
+            note = err.get("code", "error")
+        lines.append(f"  {idx:>3}  {status:>6}  {note}")
+    return "\n".join(lines)
+
+
 def format_structs_list(response: dict, offset: int = 0, **kwargs) -> str:
     """Format struct list as plain text"""
     if not response.get("success", False):
@@ -1344,6 +1366,7 @@ FORMATTERS = {
     "datatypes_search": format_datatypes_list,
     "analysis_find_call_paths": format_call_paths,
     "analysis_trace_string_usage": format_string_usage,
+    "batch_execute": format_batch_results,
 }
 
 
@@ -2733,9 +2756,118 @@ def functions_rename(old_name: str | None = None, address: str | None = None, ne
         endpoint = f"functions/{address}"
     else:
         endpoint = f"functions/by-name/{quote(old_name)}"
-    
+
     response = safe_patch(port, endpoint, payload)
     return simplify_response(response)
+
+
+@mcp.tool()
+@text_output
+def batch_execute(requests: list[dict], atomic: bool = False, port: int | None = None) -> dict:
+    """Execute multiple API operations in a single request (one HTTP roundtrip).
+
+    Each entry in `requests` is a virtual sub-request {method, path, body?} routed
+    to an existing endpoint. Returns an ordered array of {index, status, success, body}.
+
+    Args:
+        requests: list of {"method": "GET|POST|PATCH|PUT|DELETE", "path": "/...",
+                  "body": {..}? } — body optional for GET/DELETE.
+        atomic: if True, the whole batch runs in one Ghidra transaction and rolls
+                back entirely on the first failure (default False = best-effort).
+        port: specific Ghidra instance port (optional).
+
+    Examples:
+        batch_execute([
+            {"method": "GET",   "path": "/functions/by-name/main/decompile"},
+            {"method": "PATCH", "path": "/functions/0x401000", "body": {"name": "parse"}},
+        ])
+    """
+    if not requests:
+        return {
+            "success": False,
+            "error": {"code": "MISSING_PARAMETER", "message": "requests list is required and must be non-empty"},
+            "timestamp": int(time.time() * 1000),
+        }
+    port = _get_instance_port(port)
+    payload = {"atomic": atomic, "requests": requests}
+    response = safe_post(port, "batch", payload)
+    return simplify_response(response)
+
+
+def _run_batch(requests: list[dict], atomic: bool, port: int | None) -> dict:
+    """Shared helper for named batch wrappers."""
+    if not requests:
+        return {
+            "success": False,
+            "error": {"code": "MISSING_PARAMETER", "message": "input list is required and must be non-empty"},
+            "timestamp": int(time.time() * 1000),
+        }
+    port = _get_instance_port(port)
+    response = safe_post(port, "batch", {"atomic": atomic, "requests": requests})
+    return simplify_response(response)
+
+
+@mcp.tool()
+@text_output
+def functions_decompile_batch(names: list[str], port: int | None = None) -> dict:
+    """Decompile multiple functions in one request. names: fully-qualified names."""
+    reqs = [{"method": "GET", "path": f"/functions/by-name/{quote(n)}/decompile"} for n in names]
+    return _run_batch(reqs, False, port)
+
+
+@mcp.tool()
+@text_output
+def functions_rename_batch(renames: list[dict], atomic: bool = False, port: int | None = None) -> dict:
+    """Rename multiple functions. renames: list of {"old": <fqn>, "new": <fqn>}."""
+    reqs = [{"method": "PATCH", "path": f"/functions/by-name/{quote(r['old'])}", "body": {"name": r["new"]}}
+            for r in renames]
+    return _run_batch(reqs, atomic, port)
+
+
+@mcp.tool()
+@text_output
+def data_create_batch(items: list[dict], atomic: bool = False, port: int | None = None) -> dict:
+    """Create multiple data items. items: list of {"address", "type", "name"?}."""
+    reqs = [{"method": "POST", "path": "/data", "body": it} for it in items]
+    return _run_batch(reqs, atomic, port)
+
+
+@mcp.tool()
+@text_output
+def data_set_type_batch(items: list[dict], atomic: bool = False, port: int | None = None) -> dict:
+    """Set type on multiple data items. items: list of {"address", "type"}."""
+    reqs = [{"method": "PATCH", "path": f"/data/{quote(it['address'])}", "body": {"type": it["type"]}}
+            for it in items]
+    return _run_batch(reqs, atomic, port)
+
+
+@mcp.tool()
+@text_output
+def data_rename_batch(items: list[dict], atomic: bool = False, port: int | None = None) -> dict:
+    """Rename multiple data items. items: list of {"address", "name"}."""
+    reqs = [{"method": "PATCH", "path": f"/data/{quote(it['address'])}", "body": {"name": it["name"]}}
+            for it in items]
+    return _run_batch(reqs, atomic, port)
+
+
+@mcp.tool()
+@text_output
+def structs_add_field_batch(items: list[dict], atomic: bool = False, port: int | None = None) -> dict:
+    """Add fields to structs. items: list of {"struct", "field": {...}} matching the
+    single structs_add_field body shape."""
+    reqs = [{"method": "POST", "path": f"/structs/{quote(it['struct'])}/fields", "body": it.get("field", {})}
+            for it in items]
+    return _run_batch(reqs, atomic, port)
+
+
+@mcp.tool()
+@text_output
+def structs_update_field_batch(items: list[dict], atomic: bool = False, port: int | None = None) -> dict:
+    """Update struct fields. items: list of {"struct", "field_ref", "updates": {...}}."""
+    reqs = [{"method": "PATCH", "path": f"/structs/{quote(it['struct'])}/fields/{quote(str(it['field_ref']))}",
+             "body": it.get("updates", {})} for it in items]
+    return _run_batch(reqs, atomic, port)
+
 
 @mcp.tool()
 @text_output
