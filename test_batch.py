@@ -2,22 +2,38 @@
 """Live integration tests for the POST /batch pipeline.
 
 Requires a running Ghidra instance with the GhydraMCP plugin loaded and a
-program open on the default port (8192). Auto-skips when no instance is
-reachable, mirroring the other root-level integration tests.
+program open. Discovers the instance that actually has a program (the
+multi-instance model puts each open CodeBrowser on its own port, 8192-8447,
+and the base tool may have no program loaded), then targets that port.
+Auto-skips when no reachable instance has a program, mirroring the other
+root-level integration tests.
 """
 import unittest, requests
 
-BASE = "http://localhost:8192"
+HOST = "http://localhost"
+PORT_RANGE = range(8192, 8202)  # scan the first few instances
 
 
-def _alive():
-    try:
-        return requests.get(f"{BASE}/instances", timeout=2).ok
-    except Exception:
-        return False
+def _program_base():
+    """Return the base URL of the first instance with a program loaded, or None."""
+    for port in PORT_RANGE:
+        base = f"{HOST}:{port}"
+        try:
+            r = requests.get(f"{base}/program", timeout=2)
+        except Exception:
+            continue
+        try:
+            if r.json().get("success"):
+                return base
+        except ValueError:
+            continue
+    return None
 
 
-@unittest.skipUnless(_alive(), "No live Ghidra instance on :8192")
+BASE = _program_base()
+
+
+@unittest.skipUnless(BASE, "No live Ghidra instance with a program loaded")
 class BatchTests(unittest.TestCase):
 
     def test_best_effort_mixed_batch(self):
