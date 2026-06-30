@@ -3344,20 +3344,24 @@ def memory_write(address: str, bytes_data: str, format: str = "hex", port: int |
 @mcp.tool()
 @text_output
 def emulation_reset(start: str, registers: dict | None = None,
-                    memory: list | None = None, port: int | None = None) -> dict:
+                    memory: list | None = None, auto_stack: bool = True,
+                    port: int | None = None) -> dict:
     """Start a fresh PCode emulation session at an address.
 
     Args:
         start: Start address in hex (PC is set here)
         registers: Optional {register_name: hex_value} initial register writes
         memory: Optional [{"address": hex, "hex": "ca fe"}] initial memory writes
+        auto_stack: Auto-map a 1 MiB scratch stack and point RSP/RBP at its midpoint
+            (default True; pass False to manage the stack yourself, e.g. to emulate
+            from a state where the real stack pointer is already known)
         port: Specific Ghidra instance port (optional)
 
     Returns:
         dict: initial emulation state (pc, registers, steps, stopReason)
     """
     port = _get_instance_port(port)
-    body: dict = {"start": start}
+    body: dict = {"start": start, "auto_stack": auto_stack}
     if registers:
         body["registers"] = registers
     if memory:
