@@ -17,7 +17,14 @@ public class RouteRegistry {
 
     public record Match(Consumer<GhidraContext> handler,
                         Map<String, String> pathParams,
-                        Map<String, String> queryParams) {}
+                        Map<String, String> queryParams) {
+        public Match {
+            // Defensive copies: a Match is handed to SyntheticGhidraContext, which must
+            // not be able to mutate the maps the registry built for this dispatch.
+            pathParams = Map.copyOf(pathParams);
+            queryParams = Map.copyOf(queryParams);
+        }
+    }
 
     private record Route(String method, String[] segments, Consumer<GhidraContext> handler) {}
 
@@ -34,6 +41,11 @@ public class RouteRegistry {
         String queryPart = q >= 0 ? rawPath.substring(q + 1) : "";
         String[] pathSegments = splitPath(pathPart);
 
+        // First registered route that matches wins (mirrors Javalin's own
+        // registration-order matching). Where a literal and a param route share the same
+        // depth (e.g. /symbols/imports vs /symbols/{address}), the literal MUST be
+        // registered first by its resource so both Javalin and this registry resolve it
+        // the same way.
         for (Route route : routes) {
             if (!route.method().equals(m)) continue;
             if (route.segments().length != pathSegments.length) continue;
