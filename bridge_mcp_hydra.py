@@ -62,7 +62,7 @@ DEFAULT_GHIDRA_HOST = "localhost"
 QUICK_DISCOVERY_RANGE = range(DEFAULT_GHIDRA_PORT, DEFAULT_GHIDRA_PORT+10)
 FULL_DISCOVERY_RANGE = range(DEFAULT_GHIDRA_PORT, DEFAULT_GHIDRA_PORT+20)
 
-BRIDGE_VERSION = "v3.4.1"
+BRIDGE_VERSION = "v3.4.2"
 REQUIRED_API_VERSION = 3000
 
 DEFAULT_TIMEOUT = int(os.environ.get("GHIDRA_TIMEOUT", "900"))
@@ -396,7 +396,7 @@ def _unicorn_run_result(state: dict) -> dict:
         payload["mem_writes"] = [{"address": hex(w["address"]), "size": w["size"],
                                   "value": hex(w["value"])} for w in state["mem_writes"]]
         payload["trace_truncated"] = state.get("trace_truncated", False)
-        if stop == StopReason.WATCHPOINT:
+        if stop == StopReason.WATCHPOINT and state.get("watch_hit"):
             wh = state["watch_hit"]
             payload["watch_hit"] = {"address": hex(wh["address"]), "size": wh["size"],
                                     "value": hex(wh["value"]), "pc": hex(wh["pc"])}

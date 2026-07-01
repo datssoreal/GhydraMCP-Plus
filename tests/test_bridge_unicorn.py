@@ -189,3 +189,12 @@ def test_win64_scaffold_maps_process_parameters_page(monkeypatch):
     assert params_ptr == peb_base + 0x3000
     assert params_ptr in captured                       # page is mapped, not dangling
     assert res["params_address"] == hex(peb_base + 0x3000)
+
+
+def test_watchpoint_without_watch_hit_does_not_crash():
+    state = {"pc": 0x1000, "steps": 3, "stop_reason": "WATCHPOINT", "last_error": None,
+             "registers": {"RIP": 0x1000}, "trace": [], "mem_writes": [], "watch_hit": None}
+    r = _unicorn_run_result(state)
+    assert r["success"] is True
+    assert r["stop_reason"] == "WATCHPOINT"
+    assert r.get("watch_hit") is None          # omitted/None, but no exception
