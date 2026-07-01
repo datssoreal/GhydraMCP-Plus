@@ -640,3 +640,76 @@ def test_track_dirty_flag_defaults_true():
     s = _session()
     assert s.track_dirty is True
     assert s.written_bits == {} and s.executed_pages == set()
+
+
+def _map_code(s, addr, code: bytes):
+    s.map_bytes(addr, code + b"\x00" * (0x1000 - len(code)))
+
+
+def test_oep_stops_on_executing_written_byte():
+    s = _session()
+    # stub at 0x1000: write 0x90 (nop) to 0x2000, then jmp 0x2000
+    # mov byte [0x2000], 0x90 ; C6 04 25 00 20 00 00 90
+    # mov rax, 0x2000        ; 48 B8 00 20 00 00 00 00 00 00
+    # jmp rax                ; FF E0
+    _map_code(s, 0x1000, bytes.fromhex("C60425002000009048B800200000000000000FFE0".replace("0FFE0", "FFE0")))
+    _map_code(s, 0x2000, b"\x90\x90\x90")
+    s.set_register("RIP", 0x1000)
+    state = s.run(begin=0x1000, until=0, count=1000, stop_on={"oep"})
+    assert state["stop_reason"] == "OEP"
+    assert state["oep"] == 0x2000
+
+
+def test_oep_ignores_unwritten_byte_on_written_page():
+    s = _session()
+    # write one byte at 0x2000, then execute an UNWRITTEN byte at 0x2010 on the same page
+    # mov byte [0x2000],0x90 ; then jmp 0x2010
+    _map_code(s, 0x1000, bytes.fromhex("C60425002000009048B81020000000000000FFE0"))
+    _map_code(s, 0x2000, b"\x00" * 0x20)
+    # place a nop-ret at 0x2010 (unwritten by the emulation)
+    s.map_bytes(0x2000, b"\x00" * 0x10 + b"\x90\xc3" + b"\x00" * (0x1000 - 0x12))
+    s.set_register("RIP", 0x1000)
+    state = s.run(begin=0x1000, until=0x2011, count=1000, stop_on={"oep"})
+    assert state["stop_reason"] != "OEP"
+
+
+def test_oep_requires_track_dirty():
+    pytest.importorskip("unicorn")
+    from ghydra.dynamic.unicorn_engine import UnicornSession
+    s = UnicornSession(track_dirty=False)
+    _map_code(s, 0x1000, b"\x90\x90")
+    with pytest.raises(ValueError):
+        s.run(begin=0x1000, until=0, count=10, stop_on={"oep"})
+
+
+def test_no_progress_detects_spin_lock():
+    s = _session()
+    # 0x1000: F3 90 (pause) ; EB FC (jmp $-2 back to pause)
+    _map_code(s, 0x1000, b"\xf3\x90\xeb\xfc")
+    s.set_register("RIP", 0x1000)
+    state = s.run(begin=0x1000, until=0, count=200000,
+                  stop_on={"no_progress"}, no_progress_window=5000)
+    assert state["stop_reason"] == "NO_PROGRESS"
+    assert state["no_progress"]["kind"] == "spin_lock"
+
+
+def test_productive_write_loop_is_not_no_progress():
+    s = _session()
+    # writes an incrementing counter to memory each iteration -> window["writes"] > 0
+    # 0x1000: mov [0x3000+rcx*1], al? Keep it simple: stosb loop.
+    # mov rdi,0x3000; mov rcx,0x2000; mov al,0x41; rep stosb; then jmp $ (spin AFTER work)
+    code = bytes.fromhex(
+        "48bf0030000000000000"  # mov rdi,0x3000  (48 BF imm64)
+        "48b90020000000000000"  # mov rcx,0x2000
+        "b041"                    # mov al,0x41
+        "f3aa"                    # rep stosb
+        "ebfe"                    # jmp $  (spin, but writes already happened)
+    )
+    _map_code(s, 0x1000, code)
+    s.map_bytes(0x3000, b"\x00" * 0x3000)
+    s.set_register("RIP", 0x1000)
+    # run only long enough to cover the rep stosb window; it must NOT flag no_progress mid-copy
+    state = s.run(begin=0x1000, until=0, count=6000,
+                  stop_on={"no_progress"}, no_progress_window=5000)
+    assert state["no_progress"] is None or state["no_progress"]["kind"] != "spin_lock" \
+        or state["stop_reason"] == "COUNT"
