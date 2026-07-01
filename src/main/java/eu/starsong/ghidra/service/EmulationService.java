@@ -233,6 +233,9 @@ public class EmulationService {
         long cap = Math.min(maxSteps <= 0 ? MAX_STEPS_CAP : maxSteps, MAX_STEPS_CAP);
         Address until = untilStr == null || untilStr.isEmpty()
             ? null : GhidraUtil.resolveAddress(program, untilStr);
+        if (untilStr != null && !untilStr.isEmpty() && until == null) {
+            throw new IllegalArgumentException("Invalid until address: " + untilStr);
+        }
         Address watchAddr = watchAddressStr == null || watchAddressStr.isEmpty()
             ? null : GhidraUtil.resolveAddress(program, watchAddressStr);
         if (watchAddressStr != null && !watchAddressStr.isEmpty() && watchAddr == null) {
