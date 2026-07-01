@@ -577,3 +577,47 @@ def test_watch_length_is_capped_at_4096():
     # 0x140077388 would fire WATCHPOINT. Capped to 4096 -> watch_end 0x140077000 -> no fire.
     assert state["stop_reason"] == "DONE"
     assert state["watch_hit"] is None
+
+
+def test_watchpoint_fires_on_partial_overlap():
+    # dword write [0x140076000, 0x140076004) overlaps watch [0x140076002, 0x140076006)
+    s = UnicornSession()
+    base = 0x140075000
+    code = bytes.fromhex("48bb0060074001000000" "c70341000000")  # mov rbx,0x140076000 ; mov dword [rbx],0x41
+    s.map_bytes(base, code)
+    s.map_bytes(0x140076000, b"\x00" * 8)
+    s.set_register("RIP", base)
+    state = s.run(begin=base, until=base + len(code), count=10,
+                  watch_start=0x140076002, watch_length=4)
+    assert state["stop_reason"] == "WATCHPOINT"
+    assert state["watch_hit"]["address"] == 0x140076000
+    assert state["watch_hit"]["size"] == 4
+    assert state["watch_hit"]["pc"] == base + 10
+
+
+def test_watchpoint_does_not_fire_when_write_ends_at_watch_start():
+    # dword write [0x140076000, 0x140076004); watch starts exactly at 0x140076004 -> no overlap
+    s = UnicornSession()
+    base = 0x140075000
+    code = bytes.fromhex("48bb0060074001000000" "c70341000000")
+    s.map_bytes(base, code)
+    s.map_bytes(0x140076000, b"\x00" * 8)
+    s.set_register("RIP", base)
+    state = s.run(begin=base, until=base + len(code), count=10,
+                  watch_start=0x140076004, watch_length=1)
+    assert state["stop_reason"] == "DONE"
+    assert state["watch_hit"] is None
+
+
+def test_watchpoint_does_not_fire_when_write_starts_at_watch_end():
+    # byte write at 0x140076004; watch [0x140076000, 0x140076004) ends exactly there -> no overlap
+    s = UnicornSession()
+    base = 0x140075000
+    code = bytes.fromhex("48bb0460074001000000" "c60341")  # mov rbx,0x140076004 ; mov byte [rbx],0x41
+    s.map_bytes(base, code)
+    s.map_bytes(0x140076000, b"\x00" * 8)
+    s.set_register("RIP", base)
+    state = s.run(begin=base, until=base + len(code), count=10,
+                  watch_start=0x140076000, watch_length=4)
+    assert state["stop_reason"] == "DONE"
+    assert state["watch_hit"] is None
