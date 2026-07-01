@@ -52,6 +52,7 @@ def __init__(self, byte_provider=None, track_dirty=True):
     ...
     self.track_dirty = track_dirty
     self.written_pages: set[int] = set()     # pages written to (addr & ~0xfff)
+    self.written_bits: dict[int, bytearray] = {}  # page -> 512-byte bitmap, 1 bit/byte written
     self.executed_pages: set[int] = set()    # pages executed (from code hook)
     self.scratch_ranges: list[tuple[int, int]] = []  # (base, size) to exclude from sync
 ```
@@ -150,12 +151,16 @@ compatible).
 
 ### OEP — `writes_then_executes`
 
-The code hook checks whether the current PC's page is in `written_pages` (written during this
-session). On a hit → stop with `StopReason.OEP`, payload `{"oep": {"pc": "0x...", ...}}`.
-Page-granular (accepts a small false-positive risk for code that writes then linearly executes
-its own page); opt-in, so the risk is bounded to callers that ask for it. Because it consumes
-the write ledger, `oep` requires `track_dirty=True`; combining `stop_on=["oep"]` with a
-`track_dirty=False` session is rejected with a clear error rather than silently never firing.
+To support OEP detection without false positives when the unpacker stub and the decrypted payload share the same page (very common with 4KB page alignment), we use a **Double-Set Hybrid approach**:
+
+1. **Page-granular fast-path (`written_pages`)**: The code hook checks if the current PC's page `(addr & ~0xfff)` is in `written_pages`.
+2. **Byte-granular precision-check (`written_bits`)**: If and only if the page check hits, the code hook consults the page's bitmap — `bit = written_bits[page][offset >> 3] & (1 << (offset & 7))` where `offset = addr & 0xfff`.
+3. If both hit → stop with `StopReason.OEP`, payload `{"oep": {"pc": "0x...", ...}}`.
+
+The write hook maintains both structures: `written_pages.add(page)` and sets the corresponding
+bit in `written_bits` for each byte in `[address, address+size)`. This provides 100% precision
+with bounded memory (a 4KB page costs 512 bytes of bitmap — ~1.25 MB per 10 MB unpacked) and
+negligible overhead, as the bitmap lookup is only evaluated when executing on a modified page. Opt-in via `stop_on=["oep"]`. Because it consumes the write ledger, `oep` requires `track_dirty=True`; combining `stop_on=["oep"]` with a `track_dirty=False` session is rejected with a clear error rather than silently never firing.
 
 ### `no_progress` — coarse-grained cycle detection
 
@@ -202,7 +207,9 @@ stays Ghidra-free. Textual disassembly is intentionally omitted (see out-of-scop
 
 - **Ledger:** `dirty_pages()` excludes scratch ranges; accumulation persists across multiple
   `run()` calls; `track_dirty=False` disables tracking.
-- **OEP:** write to a page then execute it → `StopReason.OEP`.
+- **OEP:** executing a *written* address → `StopReason.OEP`; executing an *unwritten* address
+  on an otherwise-written page does **not** trigger (Double-Set Hybrid precision); `stop_on=["oep"]`
+  with `track_dirty=False` is rejected.
 - **no_progress:** `PAUSE; JMP $` → `spin_lock`; a loop reading a single address → `polling`; a
   productive decrypt loop (writes bytes) does **not** trigger; window/max-reads overrides
   loosen the detector as expected.
