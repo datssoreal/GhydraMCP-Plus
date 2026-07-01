@@ -107,6 +107,8 @@ def test_unicorn_win64_scaffold_maps_and_populates_gs(monkeypatch):
             captured[addr] = data
         def set_register(self, reg, val):
             captured[reg] = val
+        def region_is_mapped(self, addr, length):
+            return False
 
     monkeypatch.setattr(b, "_get_instance_port", lambda p=None: 8192)
     monkeypatch.setattr(b, "_get_unicorn_session", lambda p: MockSession())
@@ -138,3 +140,29 @@ def test_unicorn_win64_scaffold_maps_and_populates_gs(monkeypatch):
     assert int.from_bytes(ldr_bytes[0x10:0x18], "little") == head_addr
 
     assert captured["GS_BASE"] == peb_base + 0x1000
+
+
+def test_region_is_mapped_detects_overlap():
+    pytest.importorskip("unicorn")
+    from ghydra.dynamic.unicorn_engine import UnicornSession
+    s = UnicornSession()
+    assert s.region_is_mapped(0x7ffd0000, 0x4000) is False
+    s.map_bytes(0x7ffd0000, b"\x00" * 0x10)
+    assert s.region_is_mapped(0x7ffd0000, 0x4000) is True
+
+
+def test_win64_scaffold_rejects_when_region_already_mapped():
+    pytest.importorskip("unicorn")
+    import bridge_mcp_hydra as b
+    from ghydra.dynamic.unicorn_engine import UnicornSession
+    s = UnicornSession()
+    s.map_bytes(0x7ffd0000, b"\x00" * 0x10)          # collide with the scaffold's PEB base
+    b._UNICORN_SESSIONS[8192] = s
+    b.active_instances[8192] = {"url": "http://localhost:8192"}
+    try:
+        res = b.unicorn_win64_scaffold.__wrapped__(image_base="0x140000000", port=8192)
+        assert res["success"] is False
+        assert res["error"]["code"] == "REGION_IN_USE"
+    finally:
+        b._UNICORN_SESSIONS.pop(8192, None)
+        b.active_instances.pop(8192, None)

@@ -3783,6 +3783,13 @@ def unicorn_win64_scaffold(image_base: str, port: int | None = None) -> dict:
     except ValueError as e:
         return {"success": False, "error": {"code": "INVALID_ADDRESS", "message": str(e)}}
 
+    if session.region_is_mapped(0x7ffd0000, 0x4000):
+        return {"success": False,
+                "error": {"code": "REGION_IN_USE",
+                           "message": "win64 scaffold region 0x7ffd0000-0x7ffd4000 is "
+                                      "already mapped; cannot overwrite existing memory"},
+                "timestamp": int(time.time() * 1000)}
+
     peb_base = 0x7ffd0000
     teb_base = peb_base + 0x1000
     ldr_base = peb_base + 0x2000

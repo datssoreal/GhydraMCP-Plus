@@ -112,6 +112,12 @@ class UnicornSession:
         self._ensure_mapped(address, len(data))
         self._uc.mem_write(address, data)
 
+    def region_is_mapped(self, address: int, length: int) -> bool:
+        """True if any page overlapping [address, address+length) is already mapped."""
+        start = address & ~(self.PAGE - 1)
+        end = (address + length + self.PAGE - 1) & ~(self.PAGE - 1)
+        return any(page in self._mapped for page in range(start, end, self.PAGE))
+
     def read_memory(self, address: int, length: int) -> bytes:
         return bytes(self._uc.mem_read(address, length))
 
