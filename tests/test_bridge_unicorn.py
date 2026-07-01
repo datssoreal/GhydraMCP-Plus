@@ -166,3 +166,26 @@ def test_win64_scaffold_rejects_when_region_already_mapped():
     finally:
         b._UNICORN_SESSIONS.pop(8192, None)
         b.active_instances.pop(8192, None)
+
+
+def test_win64_scaffold_maps_process_parameters_page(monkeypatch):
+    import bridge_mcp_hydra as b
+    captured = {}
+    class MockSession:
+        def map_bytes(self, addr, data):
+            captured[addr] = data
+        def set_register(self, reg, val):
+            captured[reg] = val
+        def region_is_mapped(self, addr, length):
+            return False
+
+    monkeypatch.setattr(b, "_get_instance_port", lambda p=None: 8192)
+    monkeypatch.setattr(b, "_get_unicorn_session", lambda p: MockSession())
+
+    res = b.unicorn_win64_scaffold.__wrapped__(image_base="0x140000000")
+    peb_base = int(res["peb_address"], 16)
+    params_ptr = int.from_bytes(captured[peb_base][0x20:0x28], "little")
+    # The ProcessParameters pointer must resolve to a page the scaffold actually mapped.
+    assert params_ptr == peb_base + 0x3000
+    assert params_ptr in captured                       # page is mapped, not dangling
+    assert res["params_address"] == hex(peb_base + 0x3000)

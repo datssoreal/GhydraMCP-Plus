@@ -3819,6 +3819,9 @@ def unicorn_win64_scaffold(image_base: str, port: int | None = None) -> dict:
     ldr[0x38:0x40] = (head_addr + 0x20).to_bytes(8, "little")
     session.map_bytes(ldr_base, bytes(ldr))
     
+    params_base = peb_base + 0x3000
+    session.map_bytes(params_base, bytes(bytearray(0x1000)))  # zeroed RTL_USER_PROCESS_PARAMETERS stub
+
     session.set_register("GS_BASE", teb_base)
     
     return {
@@ -3826,6 +3829,7 @@ def unicorn_win64_scaffold(image_base: str, port: int | None = None) -> dict:
         "peb_address": hex(peb_base),
         "teb_address": hex(teb_base),
         "ldr_address": hex(ldr_base),
+        "params_address": hex(params_base),
         "timestamp": int(time.time() * 1000)
     }
 
