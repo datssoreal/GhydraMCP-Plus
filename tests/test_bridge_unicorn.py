@@ -151,6 +151,33 @@ def test_region_is_mapped_detects_overlap():
     assert s.region_is_mapped(0x7ffd0000, 0x4000) is True
 
 
+def test_import_error_for_missing_unicorn_blames_unicorn():
+    from bridge_mcp_hydra import _unicorn_import_error
+    r = _unicorn_import_error(ModuleNotFoundError("No module named 'unicorn'", name="unicorn"))
+    assert r["success"] is False
+    assert "unicorn not installed" in r["error"]["message"]
+    assert "ghydramcp[unicorn]" in r["error"]["message"]
+
+
+def test_import_error_for_missing_ghydra_names_ghydra_not_unicorn():
+    from bridge_mcp_hydra import _unicorn_import_error
+    # The whole client package is absent from this interpreter; the message must
+    # not misdirect the user to `pip install unicorn`.
+    r = _unicorn_import_error(ModuleNotFoundError("No module named 'ghydra'", name="ghydra"))
+    assert r["success"] is False
+    assert "cannot import 'ghydra'" in r["error"]["message"]
+    assert "unicorn not installed" not in r["error"]["message"]
+    assert "pip install -e .[unicorn]" in r["error"]["message"]
+
+
+def test_import_error_uses_submodule_top_level_name():
+    from bridge_mcp_hydra import _unicorn_import_error
+    # ModuleNotFoundError.name is the top-level module; a failed
+    # `ghydra.dynamic.unicorn_engine` import reports name='ghydra'.
+    r = _unicorn_import_error(ModuleNotFoundError("boom", name="ghydra.dynamic.unicorn_engine"))
+    assert "cannot import 'ghydra'" in r["error"]["message"]
+
+
 def test_win64_scaffold_rejects_when_region_already_mapped():
     pytest.importorskip("unicorn")
     import bridge_mcp_hydra as b
