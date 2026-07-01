@@ -83,13 +83,19 @@ class StopReason(str, Enum):
 class UnicornSession:
     PAGE = 0x1000
 
-    def __init__(self, byte_provider: Optional[Callable[[int, int], bytes]] = None):
+    def __init__(self, byte_provider: Optional[Callable[[int, int], bytes]] = None,
+                 track_dirty: bool = True):
         if not _HAVE_UNICORN:
             raise RuntimeError("unicorn not installed; pip install ghydramcp[unicorn]")
         self._uc = Uc(UC_ARCH_X86, UC_MODE_64)
         self.byte_provider = byte_provider
         self._mapped: set[int] = set()
         self._hooks: dict[int, Hook] = {}
+        self.track_dirty = track_dirty
+        self.written_pages: set[int] = set()
+        self.written_bits: dict[int, bytearray] = {}   # page -> PAGE/8-byte bitmap
+        self.executed_pages: set[int] = set()
+        self.scratch_ranges: list[tuple[int, int]] = []
 
     def _ensure_mapped(self, address: int, length: int) -> None:
         start = address & ~(self.PAGE - 1)
@@ -117,6 +123,23 @@ class UnicornSession:
         start = address & ~(self.PAGE - 1)
         end = (address + length + self.PAGE - 1) & ~(self.PAGE - 1)
         return any(page in self._mapped for page in range(start, end, self.PAGE))
+
+    def mark_scratch(self, base: int, size: int) -> None:
+        """Register a scratch region (stack/PEB/call frame) to exclude from sync."""
+        self.scratch_ranges.append((base, size))
+
+    def _in_scratch(self, page: int) -> bool:
+        return any(base <= page < base + size for base, size in self.scratch_ranges)
+
+    def dirty_pages(self) -> list[tuple[int, int]]:
+        """Written pages minus scratch, coalesced into contiguous (start, length) runs."""
+        runs: list[tuple[int, int]] = []
+        for page in sorted(p for p in self.written_pages if not self._in_scratch(p)):
+            if runs and page == runs[-1][0] + runs[-1][1]:
+                runs[-1] = (runs[-1][0], runs[-1][1] + self.PAGE)
+            else:
+                runs.append((page, self.PAGE))
+        return runs
 
     def read_memory(self, address: int, length: int) -> bytes:
         return bytes(self._uc.mem_read(address, length))

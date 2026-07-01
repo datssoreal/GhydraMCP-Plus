@@ -621,3 +621,22 @@ def test_watchpoint_does_not_fire_when_write_starts_at_watch_end():
                   watch_start=0x140076000, watch_length=4)
     assert state["stop_reason"] == "DONE"
     assert state["watch_hit"] is None
+
+
+def _session():
+    pytest.importorskip("unicorn")
+    from ghydra.dynamic.unicorn_engine import UnicornSession
+    return UnicornSession()
+
+
+def test_dirty_pages_coalesces_and_excludes_scratch():
+    s = _session()
+    s.written_pages.update({0x140000000, 0x140001000, 0x140003000, 0x7ffff0000000})
+    s.mark_scratch(0x7ffff0000000, 0x100000)
+    assert s.dirty_pages() == [(0x140000000, 0x2000), (0x140003000, 0x1000)]
+
+
+def test_track_dirty_flag_defaults_true():
+    s = _session()
+    assert s.track_dirty is True
+    assert s.written_bits == {} and s.executed_pages == set()
