@@ -3309,6 +3309,20 @@ def memory_read(address: str, length: int = 16, format: str = "hex", segment: st
 
     return simplified
 
+
+def _post_create_block(port: int, name: str, address: str, size: int,
+                       hexstr: str | None, permissions: str = "rwx") -> dict:
+    body = {"name": name, "address": address, "size": size, "permissions": permissions}
+    if hexstr is not None:
+        body["hex"] = hexstr
+    return safe_post(port, "programs/current/memory/blocks", body)
+
+
+def _post_disassemble_commit(port: int, address: str, length: int) -> dict:
+    return safe_post(port, f"programs/current/memory/{address}/disassemble",
+                     {"length": length})
+
+
 @mcp.tool()
 @text_output
 def memory_write(address: str, bytes_data: str, format: str = "hex", port: int | None = None) -> dict:
@@ -4099,6 +4113,41 @@ def memory_disassemble(address: str, limit: int = 50, offset: int = 0, port: int
 
     response = safe_get(port, f"memory/{address}/disassembly", params)
     return simplify_response(response)
+
+
+@mcp.tool()
+@text_output
+def memory_create_block(name: str, address: str, size: int, hex: str | None = None,
+                        permissions: str = "rwx", port: int | None = None) -> dict:
+    """Create a new initialized memory block (e.g. to hold unpacked code).
+
+    Args:
+        name: Block name
+        address: Start address in hex
+        size: Block size in bytes
+        hex: Optional initial contents as a hex string
+        permissions: Any of "r","w","x" (default "rwx")
+        port: Specific Ghidra instance port (optional)
+    """
+    port = _get_instance_port(port)
+    return simplify_response(_post_create_block(port, name, address, size, hex, permissions))
+
+
+@mcp.tool()
+@text_output
+def memory_disassemble_commit(address: str, length: int, port: int | None = None) -> dict:
+    """Clear and re-disassemble a range, committing real instructions to the listing.
+
+    Unlike memory_disassemble (a read-only view), this mutates the program so the
+    decompiler sees freshly-written/unpacked bytes as code.
+
+    Args:
+        address: Start address in hex
+        length: Number of bytes to disassemble
+        port: Specific Ghidra instance port (optional)
+    """
+    port = _get_instance_port(port)
+    return simplify_response(_post_disassemble_commit(port, address, length))
 
 # Xrefs tools
 @mcp.tool()

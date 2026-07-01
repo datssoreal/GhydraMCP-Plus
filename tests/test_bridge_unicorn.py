@@ -272,3 +272,30 @@ def test_unicorn_run_rejects_oep_without_tracking(monkeypatch):
     finally:
         b._UNICORN_SESSIONS.pop(8192, None)
         b.active_instances.pop(8192, None)
+
+
+def test_create_block_helper_posts_expected_payload(monkeypatch):
+    import bridge_mcp_hydra as b
+    captured = {}
+
+    def fake_post(port, path, body):
+        captured["path"] = path
+        captured["body"] = body
+        return {"success": True, "result": {"name": body["name"]}}
+
+    monkeypatch.setattr(b, "safe_post", fake_post)
+    out = b._post_create_block(8192, "unpacked_0", "0x140000000", 4096, "9090")
+    assert captured["path"] == "programs/current/memory/blocks"
+    assert captured["body"] == {"name": "unpacked_0", "address": "0x140000000",
+                                "size": 4096, "hex": "9090", "permissions": "rwx"}
+    assert out["success"] is True
+
+
+def test_disassemble_commit_helper_posts_length(monkeypatch):
+    import bridge_mcp_hydra as b
+    captured = {}
+    monkeypatch.setattr(b, "safe_post",
+                        lambda port, path, body: captured.update(path=path, body=body) or {"success": True})
+    b._post_disassemble_commit(8192, "0x140000000", 32)
+    assert captured["path"] == "programs/current/memory/0x140000000/disassemble"
+    assert captured["body"] == {"length": 32}
