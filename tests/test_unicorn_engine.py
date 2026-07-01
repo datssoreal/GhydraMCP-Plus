@@ -560,3 +560,20 @@ def test_run_without_watch_args_is_unaffected():
     state = s.run(begin=base, until=base + 2, count=10)
     assert state["stop_reason"] == "DONE"
     assert state["watch_hit"] is None
+
+
+def test_watch_length_is_capped_at_4096():
+    # watch_length far larger than the cap must NOT watch beyond watch_start+4096.
+    s = UnicornSession()
+    base = 0x140075000
+    # mov rbx, 0x140077388 ; mov byte [rbx], 0x41   (0x140077388 == watch_start+0x1388, beyond a 4096 cap)
+    code = bytes.fromhex("48bb8873074001000000" "c60341")
+    s.map_bytes(base, code)
+    s.map_bytes(0x140076000, b"\x00" * 0x2000)      # covers 0x140076000 and 0x140077000
+    s.set_register("RIP", base)
+    state = s.run(begin=base, until=base + len(code), count=10,
+                  watch_start=0x140076000, watch_length=10000)
+    # If the cap were absent, watch_end would be 0x140078710 and the write at
+    # 0x140077388 would fire WATCHPOINT. Capped to 4096 -> watch_end 0x140077000 -> no fire.
+    assert state["stop_reason"] == "DONE"
+    assert state["watch_hit"] is None

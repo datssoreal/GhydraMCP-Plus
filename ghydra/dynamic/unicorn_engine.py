@@ -59,6 +59,7 @@ _CALL_ARGS_SPLIT = 0x40000  # low 256 KiB of scratch region for bytes-args; stac
 
 
 _REDIRECT_CAP = 10_000
+_WATCH_MAX_LEN = 4096  # mirror EmulationService.run's Math.min(max(len,1), 4096)
 
 
 class StopReason(str, Enum):
@@ -208,7 +209,11 @@ class UnicornSession:
         hook_log: list[dict] = []
         trace_trunc = {"hit": False}
         ctrl = {"redirect": False, "trap": False, "hook_error": None}
-        watch_end = watch_start + watch_length if watch_start is not None and watch_length > 0 else None
+        if watch_start is not None and watch_length > 0:
+            watch_length = min(watch_length, _WATCH_MAX_LEN)
+            watch_end = watch_start + watch_length
+        else:
+            watch_end = None
         watch_hit = {"hit": False, "address": None, "size": None, "value": None, "pc": None}
 
         def _code_hook(uc, address, size, _user):
