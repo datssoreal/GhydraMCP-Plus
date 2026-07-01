@@ -31,6 +31,8 @@ public class ProgramResource implements Resource {
         routes.get("/programs", this::listPrograms);
         routes.get("/programs/current", this::getCurrentProgram);
         routes.patch("/programs/current/memory/{address}", this::writeMemory);
+        routes.post("/programs/current/memory/blocks", this::createBlock);
+        routes.post("/programs/current/memory/{address}/disassemble", this::disassembleMemory);
         // Persist analysis. ?all=true saves every open program with unsaved changes.
         routes.post("/program/save", this::saveProgram);
         routes.post("/programs/save", this::saveProgram);
@@ -75,6 +77,60 @@ public class ProgramResource implements Resource {
     private static class MemoryWriteRequest {
         public String bytes;
         public String format; // unused in simple hex-only handler
+    }
+
+    private void createBlock(GhidraContext ctx) {
+        var program = ctx.requireProgram();
+        CreateBlockRequest req = ctx.bodyAsClass(CreateBlockRequest.class);
+        if (req.address == null || req.size <= 0) {
+            throw new IllegalArgumentException("address and positive size are required");
+        }
+        try {
+            Object info = memoryService.createBlock(program, req.name, req.address,
+                req.size, req.hex, req.permissions);
+            ctx.json(Response.ok(ctx.ctx(), ctx.port(), info)
+                .self("/programs/current/memory/blocks")
+                .link("memory", "/memory")
+                .build());
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create block: " + e.getMessage(), e);
+        }
+    }
+
+    private void disassembleMemory(GhidraContext ctx) {
+        var program = ctx.requireProgram();
+        String address = ctx.pathParam("address");
+        DisassembleRequest req = ctx.bodyAsClass(DisassembleRequest.class);
+        if (req.length <= 0) {
+            throw new IllegalArgumentException("positive length is required");
+        }
+        try {
+            int instructions = memoryService.disassembleCommit(program, address, req.length);
+            ctx.json(Response.ok(ctx.ctx(), ctx.port(), Map.of(
+                    "address", address,
+                    "instructions", instructions))
+                .self("/programs/current/memory/{}/disassemble", address)
+                .link("memory", "/memory/{}", address)
+                .build());
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to disassemble: " + e.getMessage(), e);
+        }
+    }
+
+    private static class CreateBlockRequest {
+        public String name;
+        public String address;
+        public long size;
+        public String hex;
+        public String permissions;
+    }
+
+    private static class DisassembleRequest {
+        public int length;
     }
 
     /**
