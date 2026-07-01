@@ -10,7 +10,7 @@ def _build_map():
             UC_X86_REG_RSI, UC_X86_REG_RDI, UC_X86_REG_RSP, UC_X86_REG_RBP,
             UC_X86_REG_RIP, UC_X86_REG_R8, UC_X86_REG_R9, UC_X86_REG_R10,
             UC_X86_REG_R11, UC_X86_REG_R12, UC_X86_REG_R13, UC_X86_REG_R14,
-            UC_X86_REG_R15, UC_X86_REG_EFLAGS,
+            UC_X86_REG_R15, UC_X86_REG_EFLAGS, UC_X86_REG_GS_BASE
         )
     except ImportError:
         return {}
@@ -21,6 +21,7 @@ def _build_map():
         "R8": UC_X86_REG_R8, "R9": UC_X86_REG_R9, "R10": UC_X86_REG_R10,
         "R11": UC_X86_REG_R11, "R12": UC_X86_REG_R12, "R13": UC_X86_REG_R13,
         "R14": UC_X86_REG_R14, "R15": UC_X86_REG_R15, "EFLAGS": UC_X86_REG_EFLAGS,
+        "GS_BASE": UC_X86_REG_GS_BASE,
     }
 
 

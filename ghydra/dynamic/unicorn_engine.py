@@ -76,6 +76,7 @@ class StopReason(str, Enum):
     HOOK_TRAP = "HOOK_TRAP"
     REDIRECT_STORM = "REDIRECT_STORM"
     UNMAPPED = "UNMAPPED"
+    WATCHPOINT = "WATCHPOINT"
 
 
 class UnicornSession:
@@ -193,7 +194,12 @@ class UnicornSession:
         }
 
     def run(self, begin, until=0, count=100000, timeout=0, trace=False,
-            max_lazy_pages=4096):
+            max_lazy_pages=4096, watch_start=None, watch_length=0):
+        """Run the emulation session.
+
+        Lazy mapping intercepts unmapped reads/writes and requests the page
+        from the bridge callback.
+        """
         from unicorn import (UC_HOOK_CODE, UC_HOOK_MEM_WRITE,
                              UC_HOOK_MEM_UNMAPPED, UC_MEM_FETCH_UNMAPPED, UcError)
         steps = {"n": 0}
@@ -202,6 +208,8 @@ class UnicornSession:
         hook_log: list[dict] = []
         trace_trunc = {"hit": False}
         ctrl = {"redirect": False, "trap": False, "hook_error": None}
+        watch_end = watch_start + watch_length if watch_start is not None and watch_length > 0 else None
+        watch_hit = {"hit": False, "address": None, "size": None, "value": None, "pc": None}
 
         def _code_hook(uc, address, size, _user):
             hook = self._hooks.get(address)
@@ -246,6 +254,10 @@ class UnicornSession:
                     mem_writes.append({"address": address, "size": size, "value": value})
                 else:
                     trace_trunc["hit"] = True
+            if watch_end is not None and not watch_hit["hit"] and address < watch_end and address + size > watch_start:
+                watch_hit.update(hit=True, address=address, size=size, value=value,
+                                 pc=self.get_register("RIP"))
+                uc.emu_stop()
 
         lazy = {"n": 0}
         lazy_fail = {"msg": None, "reason": None}
@@ -281,7 +293,7 @@ class UnicornSession:
             return True
 
         h_code = self._uc.hook_add(UC_HOOK_CODE, _code_hook)
-        h_write = self._uc.hook_add(UC_HOOK_MEM_WRITE, _write_hook) if trace else None
+        h_write = self._uc.hook_add(UC_HOOK_MEM_WRITE, _write_hook) if (trace or watch_end is not None) else None
         h_unmapped = self._uc.hook_add(UC_HOOK_MEM_UNMAPPED, _unmapped_hook)
         stop_reason = StopReason.DONE
         last_error = None
@@ -326,6 +338,9 @@ class UnicornSession:
                         break
                     current = self.get_register("RIP")
                     continue
+                if watch_hit["hit"]:
+                    stop_reason = StopReason.WATCHPOINT
+                    break
                 # clean stop: until reached, or count exhausted
                 if steps["n"] >= cap:
                     stop_reason = StopReason.COUNT
@@ -346,4 +361,5 @@ class UnicornSession:
             "mem_writes": mem_writes if trace else [],
             "hook_log": hook_log,
             "trace_truncated": trace_trunc["hit"],
+            "watch_hit": dict(watch_hit) if watch_hit["hit"] else None,
         }

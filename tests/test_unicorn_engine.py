@@ -535,3 +535,28 @@ def test_call_passes_args_in_ms_registers():
     out = s.call(func_addr=base, args=[0xbeef], convention="ms")
     assert out["stop_reason"] == "DONE"
     assert out["return_value"] == 0xbeef
+
+
+def test_run_stops_on_watchpoint_write():
+    s = UnicornSession()
+    base = 0x140075000
+    code = bytes.fromhex("48bb0060074001000000" "c60341")
+    s.map_bytes(base, code)
+    s.map_bytes(0x140076000, b"\x00")
+    s.set_register("RIP", base)
+    state = s.run(begin=base, until=base + len(code), count=10,
+                  watch_start=0x140076000, watch_length=1)
+    assert state["stop_reason"] == "WATCHPOINT"
+    assert state["watch_hit"]["address"] == 0x140076000
+    assert state["watch_hit"]["value"] == 0x41
+    assert state["watch_hit"]["pc"] == base + 10   # the `mov [rbx],0x41` instruction
+
+
+def test_run_without_watch_args_is_unaffected():
+    s = UnicornSession()
+    base = 0x140075000
+    s.map_bytes(base, b"\x90\x90")
+    s.set_register("RIP", base)
+    state = s.run(begin=base, until=base + 2, count=10)
+    assert state["stop_reason"] == "DONE"
+    assert state["watch_hit"] is None

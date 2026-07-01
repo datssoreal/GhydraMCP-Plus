@@ -73,3 +73,68 @@ def test_unicorn_registry_has_a_lock():
     import bridge_mcp_hydra as b
     from threading import Lock
     assert isinstance(b._unicorn_lock, type(Lock()))
+
+
+def test_unicorn_run_sends_watch_params_and_formats_watchhit(monkeypatch):
+    import bridge_mcp_hydra as b
+    import json
+    captured = {}
+
+    def mock_run(self, **kwargs):
+        captured.update(kwargs)
+        return {"pc": 0x140076000, "steps": 5, "stop_reason": "WATCHPOINT", "last_error": None,
+                "registers": {"RIP": 0x140076000}, "trace": [], "mem_writes": [],
+                "watch_hit": {"address": 0x223018, "size": 4, "value": 0x41, "pc": 0x140076000}}
+
+    monkeypatch.setattr(b, "_get_instance_port", lambda p=None: 8192)
+    monkeypatch.setattr(b, "_get_unicorn_session", lambda p: type("MockSession", (), {
+        "get_register": lambda s, r: 0x140075000, "run": mock_run})())
+
+    res = b.unicorn_run.__wrapped__(until="0x140076000", watch_address="0x223018", watch_length=4)
+    assert captured["watch_start"] == 0x223018
+    assert captured["watch_length"] == 4
+    assert res["success"] is True
+    assert res["stop_reason"] == "WATCHPOINT"
+    assert res["watch_hit"]["address"] == "0x223018"
+
+
+def test_unicorn_win64_scaffold_maps_and_populates_gs(monkeypatch):
+    import bridge_mcp_hydra as b
+    import json
+    captured = {}
+    class MockSession:
+        def map_bytes(self, addr, data):
+            captured[addr] = data
+        def set_register(self, reg, val):
+            captured[reg] = val
+
+    monkeypatch.setattr(b, "_get_instance_port", lambda p=None: 8192)
+    monkeypatch.setattr(b, "_get_unicorn_session", lambda p: MockSession())
+
+    res = b.unicorn_win64_scaffold.__wrapped__(image_base="0x140000000")
+    assert res["success"] is True
+
+    peb_base = int(res["peb_address"], 16)
+    
+    assert peb_base in captured
+    assert peb_base + 0x1000 in captured
+    assert peb_base + 0x2000 in captured
+
+    peb_bytes = captured[peb_base]
+    assert peb_bytes[2] == 1
+    assert peb_bytes[3] == 0
+    assert int.from_bytes(peb_bytes[0x10:0x18], "little") == 0x140000000
+    assert int.from_bytes(peb_bytes[0x18:0x20], "little") == peb_base + 0x2000
+    assert int.from_bytes(peb_bytes[0x20:0x28], "little") == peb_base + 0x3000
+    
+    teb_bytes = captured[peb_base + 0x1000]
+    assert int.from_bytes(teb_bytes[0x30:0x38], "little") == peb_base + 0x1000
+    assert int.from_bytes(teb_bytes[0x60:0x68], "little") == peb_base
+    
+    ldr_bytes = captured[peb_base + 0x2000]
+    assert ldr_bytes[0x0:0x4] == b"\x58\x00\x00\x00"
+    assert ldr_bytes[0x4] == 1
+    head_addr = peb_base + 0x2000 + 0x10
+    assert int.from_bytes(ldr_bytes[0x10:0x18], "little") == head_addr
+
+    assert captured["GS_BASE"] == peb_base + 0x1000

@@ -375,11 +375,10 @@ def _get_unicorn_session(port: int):
 def _unicorn_run_result(state: dict) -> dict:
     """Shape an engine run() state dict into a bridge response.
 
-    success is true only for stop_reason DONE. Non-DONE returns an error
-    envelope (error.code = stop_reason, error.message from last_error) so the
-    last_error message reaches the MCP client via text_output. (format_error
-    renders error.message; the stop_reason code travels in error.code for
-    programmatic callers.)
+    success is true for DONE and WATCHPOINT (both are an intended stop, not a
+    fault). Every other stop_reason returns an error envelope (error.code =
+    stop_reason, error.message from last_error) so the last_error message
+    reaches the MCP client via text_output.
     """
     from ghydra.dynamic.unicorn_engine import StopReason
     stop = state["stop_reason"]
@@ -390,13 +389,17 @@ def _unicorn_run_result(state: dict) -> dict:
         "last_error": state["last_error"],
         "timestamp": int(time.time() * 1000),
     }
-    if stop == StopReason.DONE:
+    if stop in (StopReason.DONE, StopReason.WATCHPOINT):
         payload["success"] = True
         payload["registers"] = {k: hex(v) for k, v in state["registers"].items()}
         payload["trace"] = [hex(a) for a in state["trace"]]
         payload["mem_writes"] = [{"address": hex(w["address"]), "size": w["size"],
                                   "value": hex(w["value"])} for w in state["mem_writes"]]
         payload["trace_truncated"] = state.get("trace_truncated", False)
+        if stop == StopReason.WATCHPOINT:
+            wh = state["watch_hit"]
+            payload["watch_hit"] = {"address": hex(wh["address"]), "size": wh["size"],
+                                    "value": hex(wh["value"]), "pc": hex(wh["pc"])}
         return payload
     if stop == StopReason.COUNT:
         message = (state["last_error"]
@@ -1487,6 +1490,7 @@ FORMATTERS = {
     "unicorn_hook_clear": format_dynamic_state,
     "unicorn_hook_list": format_dynamic_state,
     "unicorn_call": format_dynamic_state,
+    "unicorn_win64_scaffold": format_dynamic_state,
 }
 
 
@@ -3643,25 +3647,33 @@ def unicorn_reset(start: str, registers: dict | None = None, stack: bool = True,
 @mcp.tool()
 @text_output
 def unicorn_run(until: str, count: int = 100000, trace: bool = False,
+                watch_address: str | None = None, watch_length: int = 0,
                 port: int | None = None) -> dict:
-    """Run the Unicorn session until an address, instruction count, or fault.
+    """Run the Unicorn session until an address, instruction count, fault, or
+    (with watch_address) until that memory region changes.
 
-    success is true only when the target address is reached (stop_reason DONE).
-    A run that hits the instruction cap returns stop_reason "COUNT" with
-    success=false: it ran cleanly but stopped at the budget without reaching the
-    target -- raise `count` or set a closer `until`; it is NOT a fault, and the
-    emulated memory up to the cap is valid (just incomplete). A failed lazy byte
-    fetch from Ghidra returns "LAZY_FETCH_FAILED" with the cause in last_error;
-    exhausting the lazy-page budget returns "LAZY_CAP_REACHED" (raise the
-    engine's max_lazy_pages); any other emulator fault returns "ERROR". On a
-    "LAZY_FETCH_FAILED"/"ERROR" stop the emulated memory may be partial or
-    corrupt and must not be trusted.
+    success is true only when the target address is reached (stop_reason DONE)
+    or a watchpoint fires (stop_reason WATCHPOINT, result.watch_hit carries
+    {address, size, value, pc} -- pc is the writing instruction). A run that
+    hits the instruction cap returns stop_reason "COUNT" with success=false:
+    if you intended to run that long, increase count or set trace=True to
+    verify progress. A failed lazy byte fetch from Ghidra returns
+    "LAZY_FETCH_FAILED" with the cause in last_error; exhausting the lazy-page
+    budget returns "LAZY_CAP_REACHED" (raise the engine's max_lazy_pages); any
+    other emulator fault returns "ERROR". On a "LAZY_FETCH_FAILED"/"ERROR" stop
+    the emulated memory may be partial or corrupt and must not be trusted.
 
     Args:
-        until: Stop address in hex (required; emulation runs begin..until)
-        count: Instruction cap (default 100000)
-        trace: Return executed instruction addresses and memory writes
+        until: Target address in hex to stop at
+        count: Maximum number of instructions to execute (default 100000)
+        trace: Record executed addresses and memory writes
+        watch_address: Optional hex address; run stops as soon as the bytes at
+            this address (length watch_length) change
+        watch_length: Number of bytes to watch (default 1 when watch_address is set)
         port: Specific Ghidra instance port (optional)
+
+    Returns:
+        dict: final engine state (pc, registers, stop_reason, optional trace)
     """
     port = _get_instance_port(port)
     try:
@@ -3669,7 +3681,14 @@ def unicorn_run(until: str, count: int = 100000, trace: bool = False,
     except KeyError as e:
         return _unicorn_error(str(e))
     begin = session.get_register("RIP")
-    state = session.run(begin=begin, until=int(until, 16), count=count, trace=trace)
+    try:
+        until_int = int(until, 16)
+        watch_addr_int = int(watch_address, 16) if watch_address else None
+        watch_len_int = watch_length or (1 if watch_address else 0)
+    except ValueError as e:
+        return {"success": False, "error": {"code": "INVALID_ADDRESS", "message": str(e)}}
+    state = session.run(begin=begin, until=until_int, count=count, trace=trace,
+                        watch_start=watch_addr_int, watch_length=watch_len_int)
     return _unicorn_run_result(state)
 
 
@@ -3738,6 +3757,70 @@ def unicorn_map(address: str, size: int, port: int | None = None) -> dict:
     session.map_bytes(addr, b"\x00" * size)
     return {"success": True, "address": hex(addr), "size": size,
             "timestamp": int(time.time() * 1000)}
+
+
+@mcp.tool()
+@text_output
+def unicorn_win64_scaffold(image_base: str, port: int | None = None) -> dict:
+    """Map and populate a dummy Windows x64 TEB, PEB, and PEB_LDR_DATA for Unicorn.
+    
+    Sets up the GS segment base to point to the TEB, which points to the PEB.
+    This satisfies code that does `mov rax, gs:[0x60]` (get PEB) and 
+    walks the LDR lists (e.g. `mov rcx, [rax+0x18]`).
+    
+    Args:
+        image_base: The base address of the main executable (e.g. "0x140000000").
+        port: Specific Ghidra instance port (optional).
+    """
+    port = _get_instance_port(port)
+    try:
+        session = _get_unicorn_session(port)
+    except KeyError as e:
+        return _unicorn_error(str(e))
+    
+    try:
+        base = int(image_base, 16)
+    except ValueError as e:
+        return {"success": False, "error": {"code": "INVALID_ADDRESS", "message": str(e)}}
+
+    peb_base = 0x7ffd0000
+    teb_base = peb_base + 0x1000
+    ldr_base = peb_base + 0x2000
+    
+    peb = bytearray(0x1000)
+    peb[2] = 1
+    peb[3] = 0
+    peb[0x10:0x18] = base.to_bytes(8, "little")
+    peb[0x18:0x20] = ldr_base.to_bytes(8, "little")
+    peb[0x20:0x28] = (peb_base + 0x3000).to_bytes(8, "little")
+    session.map_bytes(peb_base, bytes(peb))
+    
+    teb = bytearray(0x1000)
+    teb[0x30:0x38] = teb_base.to_bytes(8, "little")
+    teb[0x60:0x68] = peb_base.to_bytes(8, "little")
+    session.map_bytes(teb_base, bytes(teb))
+    
+    ldr = bytearray(0x1000)
+    ldr[0:4] = (0x58).to_bytes(4, "little")
+    ldr[4] = 1
+    head_addr = ldr_base + 0x10
+    ldr[0x10:0x18] = head_addr.to_bytes(8, "little")
+    ldr[0x18:0x20] = head_addr.to_bytes(8, "little")
+    ldr[0x20:0x28] = (head_addr + 0x10).to_bytes(8, "little")
+    ldr[0x28:0x30] = (head_addr + 0x10).to_bytes(8, "little")
+    ldr[0x30:0x38] = (head_addr + 0x20).to_bytes(8, "little")
+    ldr[0x38:0x40] = (head_addr + 0x20).to_bytes(8, "little")
+    session.map_bytes(ldr_base, bytes(ldr))
+    
+    session.set_register("GS_BASE", teb_base)
+    
+    return {
+        "success": True, 
+        "peb_address": hex(peb_base),
+        "teb_address": hex(teb_base),
+        "ldr_address": hex(ldr_base),
+        "timestamp": int(time.time() * 1000)
+    }
 
 
 @mcp.tool()
