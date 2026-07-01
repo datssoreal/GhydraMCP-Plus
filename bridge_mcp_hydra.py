@@ -364,6 +364,26 @@ def _unicorn_error(message: str, code: str = "UNICORN") -> dict:
             "timestamp": int(time.time() * 1000)}
 
 
+def _unicorn_import_error(exc: ImportError) -> dict:
+    """Explain an ImportError from the unicorn/ghydra import block.
+
+    ModuleNotFoundError.name is the top-level module that failed to import, so a
+    missing ``ghydra`` package (the whole client is absent from this
+    interpreter) is reported distinctly from a missing ``unicorn`` extra --
+    blaming unicorn for a missing ghydra sends you down the wrong path. Either
+    way we name the interpreter (sys.executable) so it is clear *which* Python
+    needs the install.
+    """
+    top = (getattr(exc, "name", None) or str(exc)).split(".", 1)[0]
+    if top == "unicorn":
+        return _unicorn_error(
+            f"unicorn not installed in the bridge's interpreter ({sys.executable}); "
+            "pip install ghydramcp[unicorn]")
+    return _unicorn_error(
+        f"cannot import '{top}' in the bridge's interpreter ({sys.executable}); "
+        "install the package there: pip install -e .[unicorn]")
+
+
 def _get_unicorn_session(port: int):
     with _unicorn_lock:
         session = _UNICORN_SESSIONS.get(port)
@@ -3620,8 +3640,8 @@ def unicorn_reset(start: str, registers: dict | None = None, stack: bool = True,
         from ghydra.client.http_client import GhidraHTTPClient
     except RuntimeError as e:
         return _unicorn_error(str(e))
-    except ImportError:
-        return _unicorn_error("unicorn not installed; pip install ghydramcp[unicorn]")
+    except ImportError as e:
+        return _unicorn_import_error(e)
 
     try:
         client = GhidraHTTPClient(port=port)
