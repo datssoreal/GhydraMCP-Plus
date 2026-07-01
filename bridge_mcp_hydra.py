@@ -62,7 +62,7 @@ DEFAULT_GHIDRA_HOST = "localhost"
 QUICK_DISCOVERY_RANGE = range(DEFAULT_GHIDRA_PORT, DEFAULT_GHIDRA_PORT+10)
 FULL_DISCOVERY_RANGE = range(DEFAULT_GHIDRA_PORT, DEFAULT_GHIDRA_PORT+20)
 
-BRIDGE_VERSION = "v3.4.1"
+BRIDGE_VERSION = "v3.4.2"
 REQUIRED_API_VERSION = 3000
 
 DEFAULT_TIMEOUT = int(os.environ.get("GHIDRA_TIMEOUT", "900"))
@@ -396,7 +396,7 @@ def _unicorn_run_result(state: dict) -> dict:
         payload["mem_writes"] = [{"address": hex(w["address"]), "size": w["size"],
                                   "value": hex(w["value"])} for w in state["mem_writes"]]
         payload["trace_truncated"] = state.get("trace_truncated", False)
-        if stop == StopReason.WATCHPOINT:
+        if stop == StopReason.WATCHPOINT and state.get("watch_hit"):
             wh = state["watch_hit"]
             payload["watch_hit"] = {"address": hex(wh["address"]), "size": wh["size"],
                                     "value": hex(wh["value"]), "pc": hex(wh["pc"])}
@@ -3783,6 +3783,13 @@ def unicorn_win64_scaffold(image_base: str, port: int | None = None) -> dict:
     except ValueError as e:
         return {"success": False, "error": {"code": "INVALID_ADDRESS", "message": str(e)}}
 
+    if session.region_is_mapped(0x7ffd0000, 0x4000):
+        return {"success": False,
+                "error": {"code": "REGION_IN_USE",
+                           "message": "win64 scaffold region 0x7ffd0000-0x7ffd4000 is "
+                                      "already mapped; cannot overwrite existing memory"},
+                "timestamp": int(time.time() * 1000)}
+
     peb_base = 0x7ffd0000
     teb_base = peb_base + 0x1000
     ldr_base = peb_base + 0x2000
@@ -3812,6 +3819,9 @@ def unicorn_win64_scaffold(image_base: str, port: int | None = None) -> dict:
     ldr[0x38:0x40] = (head_addr + 0x20).to_bytes(8, "little")
     session.map_bytes(ldr_base, bytes(ldr))
     
+    params_base = peb_base + 0x3000
+    session.map_bytes(params_base, bytes(bytearray(0x1000)))  # zeroed RTL_USER_PROCESS_PARAMETERS stub
+
     session.set_register("GS_BASE", teb_base)
     
     return {
@@ -3819,6 +3829,7 @@ def unicorn_win64_scaffold(image_base: str, port: int | None = None) -> dict:
         "peb_address": hex(peb_base),
         "teb_address": hex(teb_base),
         "ldr_address": hex(ldr_base),
+        "params_address": hex(params_base),
         "timestamp": int(time.time() * 1000)
     }
 

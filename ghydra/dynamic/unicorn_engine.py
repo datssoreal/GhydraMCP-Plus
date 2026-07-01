@@ -59,6 +59,7 @@ _CALL_ARGS_SPLIT = 0x40000  # low 256 KiB of scratch region for bytes-args; stac
 
 
 _REDIRECT_CAP = 10_000
+_WATCH_MAX_LEN = 4096  # mirror EmulationService.run's Math.min(max(len,1), 4096)
 
 
 class StopReason(str, Enum):
@@ -110,6 +111,12 @@ class UnicornSession:
     def map_bytes(self, address: int, data: bytes) -> None:
         self._ensure_mapped(address, len(data))
         self._uc.mem_write(address, data)
+
+    def region_is_mapped(self, address: int, length: int) -> bool:
+        """True if any page overlapping [address, address+length) is already mapped."""
+        start = address & ~(self.PAGE - 1)
+        end = (address + length + self.PAGE - 1) & ~(self.PAGE - 1)
+        return any(page in self._mapped for page in range(start, end, self.PAGE))
 
     def read_memory(self, address: int, length: int) -> bytes:
         return bytes(self._uc.mem_read(address, length))
@@ -208,7 +215,11 @@ class UnicornSession:
         hook_log: list[dict] = []
         trace_trunc = {"hit": False}
         ctrl = {"redirect": False, "trap": False, "hook_error": None}
-        watch_end = watch_start + watch_length if watch_start is not None and watch_length > 0 else None
+        if watch_start is not None and watch_length > 0:
+            watch_length = min(watch_length, _WATCH_MAX_LEN)
+            watch_end = watch_start + watch_length
+        else:
+            watch_end = None
         watch_hit = {"hit": False, "address": None, "size": None, "value": None, "pc": None}
 
         def _code_hook(uc, address, size, _user):

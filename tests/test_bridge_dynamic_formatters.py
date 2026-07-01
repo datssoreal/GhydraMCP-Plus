@@ -74,3 +74,48 @@ def test_batch_execute_table_includes_response_body():
     ]}
     out = b.format_batch_results(response)
     assert "0x140001000" in out
+
+
+def test_format_dynamic_state_renders_list_of_dicts():
+    resp = {"success": True, "result": {
+        "mem_writes": [{"address": "0x140076000", "size": 4, "value": "0x41"}],
+        "trace": ["0x140075000", "0x140075004"],
+        "registers": {},
+        "hook_log": [],
+    }}
+    out = b.format_dynamic_state(resp)
+    assert "mem_writes (1):" in out
+    assert "0x140076000" in out            # the dict body is rendered, not collapsed
+    assert "trace (2):" in out
+    assert "0x140075004" in out
+    assert "registers: {}" in out          # empty dict branch
+    assert "hook_log: []" in out           # empty list branch
+
+
+def test_format_dynamic_state_handles_non_dict_result():
+    out = b.format_dynamic_state({"success": True, "result": "raw-string-payload"})
+    assert out == "raw-string-payload"
+
+
+def test_format_dynamic_state_reports_failure_via_error():
+    out = b.format_dynamic_state({"success": False, "error": {"code": "BOOM", "message": "kaboom"}})
+    assert "kaboom" in out or "BOOM" in out
+
+
+def test_batch_results_omits_body_line_when_payload_empty():
+    # body carries only stripped keys -> no "body:" line, but still counts as ok
+    resp = {"success": True, "result": [
+        {"index": 0, "status": 200, "success": True,
+         "body": {"success": True, "timestamp": 1, "_links": {}}},
+    ]}
+    out = b.format_batch_results(resp)
+    assert "ok" in out
+    assert "body:" not in out
+
+
+def test_batch_results_tolerates_non_dict_body():
+    resp = {"success": True, "result": [
+        {"index": 0, "status": 500, "success": False, "body": "not-a-dict"},
+    ]}
+    out = b.format_batch_results(resp)          # must not raise
+    assert "error" in out

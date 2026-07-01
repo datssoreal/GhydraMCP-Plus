@@ -107,6 +107,8 @@ def test_unicorn_win64_scaffold_maps_and_populates_gs(monkeypatch):
             captured[addr] = data
         def set_register(self, reg, val):
             captured[reg] = val
+        def region_is_mapped(self, addr, length):
+            return False
 
     monkeypatch.setattr(b, "_get_instance_port", lambda p=None: 8192)
     monkeypatch.setattr(b, "_get_unicorn_session", lambda p: MockSession())
@@ -138,3 +140,61 @@ def test_unicorn_win64_scaffold_maps_and_populates_gs(monkeypatch):
     assert int.from_bytes(ldr_bytes[0x10:0x18], "little") == head_addr
 
     assert captured["GS_BASE"] == peb_base + 0x1000
+
+
+def test_region_is_mapped_detects_overlap():
+    pytest.importorskip("unicorn")
+    from ghydra.dynamic.unicorn_engine import UnicornSession
+    s = UnicornSession()
+    assert s.region_is_mapped(0x7ffd0000, 0x4000) is False
+    s.map_bytes(0x7ffd0000, b"\x00" * 0x10)
+    assert s.region_is_mapped(0x7ffd0000, 0x4000) is True
+
+
+def test_win64_scaffold_rejects_when_region_already_mapped():
+    pytest.importorskip("unicorn")
+    import bridge_mcp_hydra as b
+    from ghydra.dynamic.unicorn_engine import UnicornSession
+    s = UnicornSession()
+    s.map_bytes(0x7ffd0000, b"\x00" * 0x10)          # collide with the scaffold's PEB base
+    b._UNICORN_SESSIONS[8192] = s
+    b.active_instances[8192] = {"url": "http://localhost:8192"}
+    try:
+        res = b.unicorn_win64_scaffold.__wrapped__(image_base="0x140000000", port=8192)
+        assert res["success"] is False
+        assert res["error"]["code"] == "REGION_IN_USE"
+    finally:
+        b._UNICORN_SESSIONS.pop(8192, None)
+        b.active_instances.pop(8192, None)
+
+
+def test_win64_scaffold_maps_process_parameters_page(monkeypatch):
+    import bridge_mcp_hydra as b
+    captured = {}
+    class MockSession:
+        def map_bytes(self, addr, data):
+            captured[addr] = data
+        def set_register(self, reg, val):
+            captured[reg] = val
+        def region_is_mapped(self, addr, length):
+            return False
+
+    monkeypatch.setattr(b, "_get_instance_port", lambda p=None: 8192)
+    monkeypatch.setattr(b, "_get_unicorn_session", lambda p: MockSession())
+
+    res = b.unicorn_win64_scaffold.__wrapped__(image_base="0x140000000")
+    peb_base = int(res["peb_address"], 16)
+    params_ptr = int.from_bytes(captured[peb_base][0x20:0x28], "little")
+    # The ProcessParameters pointer must resolve to a page the scaffold actually mapped.
+    assert params_ptr == peb_base + 0x3000
+    assert params_ptr in captured                       # page is mapped, not dangling
+    assert res["params_address"] == hex(peb_base + 0x3000)
+
+
+def test_watchpoint_without_watch_hit_does_not_crash():
+    state = {"pc": 0x1000, "steps": 3, "stop_reason": "WATCHPOINT", "last_error": None,
+             "registers": {"RIP": 0x1000}, "trace": [], "mem_writes": [], "watch_hit": None}
+    r = _unicorn_run_result(state)
+    assert r["success"] is True
+    assert r["stop_reason"] == "WATCHPOINT"
+    assert r.get("watch_hit") is None          # omitted/None, but no exception
