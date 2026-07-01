@@ -100,3 +100,22 @@ def test_format_dynamic_state_handles_non_dict_result():
 def test_format_dynamic_state_reports_failure_via_error():
     out = b.format_dynamic_state({"success": False, "error": {"code": "BOOM", "message": "kaboom"}})
     assert "kaboom" in out or "BOOM" in out
+
+
+def test_batch_results_omits_body_line_when_payload_empty():
+    # body carries only stripped keys -> no "body:" line, but still counts as ok
+    resp = {"success": True, "result": [
+        {"index": 0, "status": 200, "success": True,
+         "body": {"success": True, "timestamp": 1, "_links": {}}},
+    ]}
+    out = b.format_batch_results(resp)
+    assert "ok" in out
+    assert "body:" not in out
+
+
+def test_batch_results_tolerates_non_dict_body():
+    resp = {"success": True, "result": [
+        {"index": 0, "status": 500, "success": False, "body": "not-a-dict"},
+    ]}
+    out = b.format_batch_results(resp)          # must not raise
+    assert "error" in out
