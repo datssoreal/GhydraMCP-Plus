@@ -260,6 +260,7 @@ class UnicornSession:
         _NOPROG_REGS = ("RIP", "RSP", "RAX", "RBX", "RCX", "RDX", "RSI", "RDI")
         window = {"start": 0, "writes": 0, "reads": set(), "pcs": set(), "regs": ()}
         seen_hashes: set[int] = set()
+        noprog_seen_first_window = {"hit": False}
 
         def _snapshot():
             return tuple(self.get_register(r) for r in _NOPROG_REGS)
@@ -346,15 +347,21 @@ class UnicornSession:
                 if steps["n"] - window["start"] >= no_progress_window:
                     if window["writes"] == 0:
                         h = hash(_snapshot())
-                        if h in seen_hashes:
-                            ctrl["no_progress"] = _build_no_progress("spin_lock")
-                            uc.emu_stop()
-                            return
+                        # A single zero-write window is not yet evidence of anything (it
+                        # could be the first pass through a loop that hasn't repeated, or
+                        # genuine progress that just hasn't written yet); classification
+                        # needs at least one prior zero-write window to compare against.
+                        if noprog_seen_first_window["hit"]:
+                            if h in seen_hashes:
+                                ctrl["no_progress"] = _build_no_progress("spin_lock")
+                                uc.emu_stop()
+                                return
+                            if len(window["reads"]) <= no_progress_max_reads:
+                                ctrl["no_progress"] = _build_no_progress("polling")
+                                uc.emu_stop()
+                                return
                         seen_hashes.add(h)
-                        if len(window["reads"]) <= no_progress_max_reads:
-                            ctrl["no_progress"] = _build_no_progress("polling")
-                            uc.emu_stop()
-                            return
+                        noprog_seen_first_window["hit"] = True
                     _reset_window()
             if trace:
                 if len(executed) < _TRACE_CAP:
