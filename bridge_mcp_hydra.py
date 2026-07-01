@@ -395,10 +395,10 @@ def _get_unicorn_session(port: int):
 def _unicorn_run_result(state: dict) -> dict:
     """Shape an engine run() state dict into a bridge response.
 
-    success is true for DONE and WATCHPOINT (both are an intended stop, not a
-    fault). Every other stop_reason returns an error envelope (error.code =
-    stop_reason, error.message from last_error) so the last_error message
-    reaches the MCP client via text_output.
+    success is true for DONE, WATCHPOINT, OEP, and NO_PROGRESS (all are an
+    intended stop, not a fault). Every other stop_reason returns an error
+    envelope (error.code = stop_reason, error.message from last_error) so the
+    last_error message reaches the MCP client via text_output.
     """
     from ghydra.dynamic.unicorn_engine import StopReason
     stop = state["stop_reason"]
@@ -409,7 +409,7 @@ def _unicorn_run_result(state: dict) -> dict:
         "last_error": state["last_error"],
         "timestamp": int(time.time() * 1000),
     }
-    if stop in (StopReason.DONE, StopReason.WATCHPOINT):
+    if stop in (StopReason.DONE, StopReason.WATCHPOINT, StopReason.OEP, StopReason.NO_PROGRESS):
         payload["success"] = True
         payload["registers"] = {k: hex(v) for k, v in state["registers"].items()}
         payload["trace"] = [hex(a) for a in state["trace"]]
@@ -420,6 +420,18 @@ def _unicorn_run_result(state: dict) -> dict:
             wh = state["watch_hit"]
             payload["watch_hit"] = {"address": hex(wh["address"]), "size": wh["size"],
                                     "value": hex(wh["value"]), "pc": hex(wh["pc"])}
+        if stop == StopReason.OEP and state.get("oep") is not None:
+            payload["oep"] = {"pc": hex(state["oep"])}
+        if stop == StopReason.NO_PROGRESS and state.get("no_progress"):
+            np = state["no_progress"]
+            payload["no_progress"] = {
+                "kind": np["kind"],
+                "pc": hex(np["pc"]),
+                "loop_pcs": [hex(a) for a in np["loop_pcs"]],
+                "reads_from": [hex(a) for a in np["reads_from"]],
+                "register_delta": {k: [hex(b), hex(a)]
+                                   for k, (b, a) in np["register_delta"].items()},
+            }
         return payload
     if stop == StopReason.COUNT:
         message = (state["last_error"]
@@ -445,6 +457,7 @@ def _apply_default_stack(session) -> tuple[int, int]:
     allowed by the purist contract; this does not relax lazy mapping.
     """
     session.map_bytes(_DEFAULT_STACK_BASE, b"\x00" * _DEFAULT_STACK_SIZE)
+    session.mark_scratch(_DEFAULT_STACK_BASE, _DEFAULT_STACK_SIZE)
     rsp = _DEFAULT_STACK_BASE + _DEFAULT_STACK_SIZE - 0x1000
     session.set_register("RSP", rsp)
     session.set_register("RBP", rsp)
@@ -3623,7 +3636,7 @@ def emulation_dispose(port: int | None = None) -> dict:
 @mcp.tool()
 @text_output
 def unicorn_reset(start: str, registers: dict | None = None, stack: bool = True,
-                  port: int | None = None) -> dict:
+                  track_dirty: bool = True, port: int | None = None) -> dict:
     """Start a fresh Unicorn emulation session that lazily pulls bytes from Ghidra.
 
     Args:
@@ -3631,6 +3644,9 @@ def unicorn_reset(start: str, registers: dict | None = None, stack: bool = True,
         registers: Optional {register_name: hex_value} initial writes
         stack: Auto-map a default 1 MiB scratch stack and point RSP/RBP at it
             (default True; pass False to manage the stack yourself)
+        track_dirty: Track written/executed pages so unicorn_sync_to_program and
+            stop_on=["oep"] work (default True; set False only for pure speed on
+            giant loops, which disables dirty-page sync and OEP detection)
         port: Specific Ghidra instance port (optional)
     """
     port = _get_instance_port(port)
@@ -3645,7 +3661,8 @@ def unicorn_reset(start: str, registers: dict | None = None, stack: bool = True,
 
     try:
         client = GhidraHTTPClient(port=port)
-        session = UnicornSession(byte_provider=make_ghidra_provider(client))
+        session = UnicornSession(byte_provider=make_ghidra_provider(client),
+                                 track_dirty=track_dirty)
     except RuntimeError as e:
         return _unicorn_error(str(e))
 
@@ -3668,6 +3685,8 @@ def unicorn_reset(start: str, registers: dict | None = None, stack: bool = True,
 @text_output
 def unicorn_run(until: str, count: int = 100000, trace: bool = False,
                 watch_address: str | None = None, watch_length: int = 0,
+                stop_on: list[str] | None = None,
+                no_progress_window: int = 5000, no_progress_max_reads: int = 2,
                 port: int | None = None) -> dict:
     """Run the Unicorn session until an address, instruction count, fault, or
     (with watch_address) until that memory region changes.
@@ -3690,6 +3709,13 @@ def unicorn_run(until: str, count: int = 100000, trace: bool = False,
         watch_address: Optional hex address; run stops as soon as the bytes at
             this address (length watch_length) change
         watch_length: Number of bytes to watch (default 1 when watch_address is set)
+        stop_on: Optional list of early-stop predicates: "oep" (stop when a
+            previously-written byte is executed — classic unpack-complete signal;
+            needs track_dirty) and "no_progress" (stop on a spin/polling dead loop)
+        no_progress_window: Instructions per no_progress evaluation window (default 5000)
+        no_progress_max_reads: Max unique read addresses for a window to count as a
+            polling loop (default 2); raise both to loosen the detector on heavy
+            legitimate loops (unpackers, VM dispatchers)
         port: Specific Ghidra instance port (optional)
 
     Returns:
@@ -3707,8 +3733,22 @@ def unicorn_run(until: str, count: int = 100000, trace: bool = False,
         watch_len_int = watch_length or (1 if watch_address else 0)
     except ValueError as e:
         return {"success": False, "error": {"code": "INVALID_ADDRESS", "message": str(e)}}
+    stop_set = set(stop_on or [])
+    unknown = stop_set - {"oep", "no_progress"}
+    if unknown:
+        return {"success": False,
+                "error": {"code": "INVALID_STOP_ON",
+                          "message": f"unknown stop_on values: {sorted(unknown)} "
+                                     "(valid: 'oep', 'no_progress')"}}
+    if "oep" in stop_set and not session.track_dirty:
+        return {"success": False,
+                "error": {"code": "OEP_NEEDS_TRACKING",
+                          "message": "stop_on=['oep'] requires a session created "
+                                     "with track_dirty=True"}}
     state = session.run(begin=begin, until=until_int, count=count, trace=trace,
-                        watch_start=watch_addr_int, watch_length=watch_len_int)
+                        watch_start=watch_addr_int, watch_length=watch_len_int,
+                        stop_on=stop_set, no_progress_window=no_progress_window,
+                        no_progress_max_reads=no_progress_max_reads)
     return _unicorn_run_result(state)
 
 
@@ -3842,6 +3882,7 @@ def unicorn_win64_scaffold(image_base: str, port: int | None = None) -> dict:
     params_base = peb_base + 0x3000
     session.map_bytes(params_base, bytes(bytearray(0x1000)))  # zeroed RTL_USER_PROCESS_PARAMETERS stub
 
+    session.mark_scratch(peb_base, 0x4000)   # PEB/TEB/LDR/params scaffold
     session.set_register("GS_BASE", teb_base)
     
     return {

@@ -109,6 +109,8 @@ def test_unicorn_win64_scaffold_maps_and_populates_gs(monkeypatch):
             captured[reg] = val
         def region_is_mapped(self, addr, length):
             return False
+        def mark_scratch(self, base, size):
+            captured[("scratch", base)] = size
 
     monkeypatch.setattr(b, "_get_instance_port", lambda p=None: 8192)
     monkeypatch.setattr(b, "_get_unicorn_session", lambda p: MockSession())
@@ -205,6 +207,8 @@ def test_win64_scaffold_maps_process_parameters_page(monkeypatch):
             captured[reg] = val
         def region_is_mapped(self, addr, length):
             return False
+        def mark_scratch(self, base, size):
+            captured[("scratch", base)] = size
 
     monkeypatch.setattr(b, "_get_instance_port", lambda p=None: 8192)
     monkeypatch.setattr(b, "_get_unicorn_session", lambda p: MockSession())
@@ -225,3 +229,46 @@ def test_watchpoint_without_watch_hit_does_not_crash():
     assert r["success"] is True
     assert r["stop_reason"] == "WATCHPOINT"
     assert r.get("watch_hit") is None          # omitted/None, but no exception
+
+
+def _state_full(stop, **extra):
+    base = {"pc": 0x2000, "steps": 5000, "stop_reason": stop, "last_error": None,
+            "registers": {"RIP": 0x2000, "RAX": 0x0}, "trace": [], "mem_writes": [],
+            "watch_hit": None, "oep": None, "no_progress": None}
+    base.update(extra)
+    return base
+
+
+def test_oep_result_is_success_with_payload():
+    r = _unicorn_run_result(_state_full("OEP", oep=0x2000))
+    assert r["success"] is True
+    assert r["oep"] == {"pc": "0x2000"}
+    assert r["registers"]["RAX"] == "0x0"
+
+
+def test_no_progress_result_hex_formats_payload():
+    np = {"kind": "polling", "pc": 0x140001045,
+          "loop_pcs": [0x140001040, 0x140001044], "reads_from": [0x7ffdf000],
+          "register_delta": {"RCX": (0x5, 0x6)}}
+    r = _unicorn_run_result(_state_full("NO_PROGRESS", no_progress=np))
+    assert r["success"] is True
+    assert r["no_progress"]["kind"] == "polling"
+    assert r["no_progress"]["pc"] == "0x140001045"
+    assert r["no_progress"]["loop_pcs"] == ["0x140001040", "0x140001044"]
+    assert r["no_progress"]["reads_from"] == ["0x7ffdf000"]
+    assert r["no_progress"]["register_delta"] == {"RCX": ["0x5", "0x6"]}
+
+
+def test_unicorn_run_rejects_oep_without_tracking(monkeypatch):
+    pytest.importorskip("unicorn")
+    import bridge_mcp_hydra as b
+    from ghydra.dynamic.unicorn_engine import UnicornSession
+    b._UNICORN_SESSIONS[8192] = UnicornSession(track_dirty=False)
+    b.active_instances[8192] = {"url": "http://localhost:8192"}
+    try:
+        r = b.unicorn_run.__wrapped__("0x0", stop_on=["oep"], port=8192)
+        assert r["success"] is False
+        assert r["error"]["code"] == "OEP_NEEDS_TRACKING"
+    finally:
+        b._UNICORN_SESSIONS.pop(8192, None)
+        b.active_instances.pop(8192, None)
