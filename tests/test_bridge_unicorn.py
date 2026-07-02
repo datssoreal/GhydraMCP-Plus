@@ -382,3 +382,43 @@ def test_sync_isolates_a_failing_region_from_the_rest(monkeypatch):
     finally:
         b._UNICORN_SESSIONS.pop(8192, None)
         b.active_instances.pop(8192, None)
+
+
+def test_sync_splits_a_run_straddling_a_segment_boundary(monkeypatch):
+    # ONE contiguous 2-page dirty run (0x140000000..0x140002000), but the fake
+    # segment only covers the first page -> the run straddles the segment edge.
+    # The second page is executed, so its spillover should become a fresh block,
+    # not fail the whole run.
+    pytest.importorskip("unicorn")
+    import bridge_mcp_hydra as b
+    from ghydra.dynamic.unicorn_engine import UnicornSession
+    s = UnicornSession()
+    s.map_bytes(0x140000000, b"\x90" * 0x2000)
+    s.written_pages.update({0x140000000, 0x140001000})
+    s.executed_pages.update({0x140001000})
+    b._UNICORN_SESSIONS[8192] = s
+    b.active_instances[8192] = {"url": "http://localhost:8192"}
+
+    calls = {"patched": [], "created": []}
+    monkeypatch.setattr(b, "safe_get", lambda port, path: {"success": True, "result": [
+        {"start": "0x140000000", "end": "0x140001000"}]})  # segment covers only page 0
+    monkeypatch.setattr(b, "safe_patch",
+                        lambda port, path, body: calls["patched"].append((path, body)) or {"success": True})
+    monkeypatch.setattr(b, "_post_create_block",
+                        lambda *a: calls["created"].append(a) or {"success": True, "result": {"name": "unpacked_0"}})
+    monkeypatch.setattr(b, "_post_disassemble_commit",
+                        lambda *a: {"success": True})
+    try:
+        r = b.unicorn_sync_to_program.__wrapped__(port=8192)
+        assert r["success"] is True
+        # page 0 (in-segment) -> patched; page 1 (out-of-segment, executed) -> new block
+        assert any("0x140000000" in p for p, _ in calls["patched"])
+        assert len(calls["created"]) == 1
+        assert calls["created"][0][2] == "0x140001000"   # address arg to _post_create_block
+        starts = {item["start"] for item in r["synced"]}
+        assert "0x140000000" in starts and "0x140001000" in starts
+        # neither half should be reported as failed/skipped
+        assert r["skipped"] == []
+    finally:
+        b._UNICORN_SESSIONS.pop(8192, None)
+        b.active_instances.pop(8192, None)

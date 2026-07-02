@@ -4171,6 +4171,38 @@ def _sync_in_segment(start: int, length: int, segs: list[tuple[int, int]]) -> bo
     return any(s <= start and start + length <= e for s, e in segs)
 
 
+def _sync_split_run(rstart: int, rlen: int,
+                    segs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Split [rstart, rstart+rlen) into maximal sub-runs that each lie
+    entirely inside one segment or entirely outside all segments.
+
+    dirty_pages() coalesces contiguous written pages without regard to
+    segment boundaries, so a single run can legitimately straddle the edge
+    of a segment (e.g. a write spills from an existing block into fresh
+    territory). Without splitting, _sync_in_segment sees the whole run as
+    "doesn't fit any one segment" and the entire run falls through to
+    create-block/skip handling, which fails when the in-segment portion
+    collides with the segment it should have patched instead. Probing at
+    page granularity matches the granularity of the ledger this feeds from
+    (written_pages/executed_pages are both page-keyed).
+    """
+    PAGE = 0x1000
+    end = rstart + rlen
+    runs: list[tuple[int, int, bool]] = []
+    pos = rstart
+    while pos < end:
+        page = pos - (pos % PAGE)
+        chunk_end = min(page + PAGE, end)
+        in_seg = _sync_in_segment(page, PAGE, segs)
+        if runs and runs[-1][2] == in_seg:
+            s, _l, f = runs[-1]
+            runs[-1] = (s, chunk_end - s, f)
+        else:
+            runs.append((pos, chunk_end - pos, in_seg))
+        pos = chunk_end
+    return [(s, l) for s, l, _ in runs]
+
+
 def _sync_write_chunks(port: int, address: int, data: bytes) -> None:
     for i in range(0, len(data), 4096):
         chunk = data[i:i + 4096]
@@ -4210,11 +4242,15 @@ def unicorn_sync_to_program(start: str | None = None, length: int | None = None,
         regions = session.dirty_pages()
 
     segs = _sync_fetch_segments(port)
+    subregions: list[tuple[int, int]] = []
+    for rstart, rlen in regions:
+        subregions.extend(_sync_split_run(rstart, rlen, segs))
+
     synced: list[dict] = []
     skipped: list[dict] = []
     created_n = 0
 
-    for rstart, rlen in regions:
+    for rstart, rlen in subregions:
         try:
             data = session.read_memory(rstart, rlen)
         except Exception as e:
