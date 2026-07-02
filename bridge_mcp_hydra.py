@@ -4223,22 +4223,29 @@ def unicorn_sync_to_program(start: str | None = None, length: int | None = None,
         executed = any((rstart + off) & ~0xfff in session.executed_pages
                        for off in range(0, rlen, 0x1000))
         entry = {"start": hex(rstart), "length": rlen, "created": False, "disassembled": False}
-        if _sync_in_segment(rstart, rlen, segs):
-            _sync_write_chunks(port, rstart, data)
-            entry["block"] = "existing"
-        elif executed:
-            name = f"unpacked_{created_n}"
-            created_n += 1
-            _post_create_block(port, name, hex(rstart), rlen, data.hex())
-            entry["block"] = name
-            entry["created"] = True
-        else:
-            skipped.append({"start": hex(rstart), "length": rlen,
-                            "reason": "out-of-segment, not executed"})
+        try:
+            if _sync_in_segment(rstart, rlen, segs):
+                _sync_write_chunks(port, rstart, data)
+                entry["block"] = "existing"
+            elif executed:
+                name = f"unpacked_{created_n}"
+                created_n += 1
+                _post_create_block(port, name, hex(rstart), rlen, data.hex())
+                entry["block"] = name
+                entry["created"] = True
+            else:
+                skipped.append({"start": hex(rstart), "length": rlen,
+                                "reason": "out-of-segment, not executed"})
+                continue
+        except Exception as e:
+            skipped.append({"start": hex(rstart), "length": rlen, "reason": f"sync failed: {e}"})
             continue
         if disassemble and executed:
-            _post_disassemble_commit(port, hex(rstart), rlen)
-            entry["disassembled"] = True
+            try:
+                _post_disassemble_commit(port, hex(rstart), rlen)
+                entry["disassembled"] = True
+            except Exception as e:
+                entry["disassemble_error"] = str(e)
         synced.append(entry)
 
     return {"success": True, "synced": synced, "skipped": skipped,

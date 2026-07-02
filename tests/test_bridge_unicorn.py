@@ -350,3 +350,35 @@ def test_sync_skips_out_of_segment_unexecuted_heap(monkeypatch):
     finally:
         b._UNICORN_SESSIONS.pop(8192, None)
         b.active_instances.pop(8192, None)
+
+
+def test_sync_isolates_a_failing_region_from_the_rest(monkeypatch):
+    # heap page (0x30000000) is executed -> would normally get a fresh block via
+    # _post_create_block; make that call raise (simulating a transient HTTP failure)
+    # and confirm the in-segment page (0x140000000) still syncs successfully in the
+    # same call, and the failing region is recorded in "skipped" instead of crashing
+    # the whole loop.
+    b, calls = _sync_setup(monkeypatch, executed_pages={0x30000000})
+    try:
+        def raising_create_block(*a):
+            calls["created"].append(a)
+            raise RuntimeError("connection reset by peer")
+
+        monkeypatch.setattr(b, "_post_create_block", raising_create_block)
+
+        r = b.unicorn_sync_to_program.__wrapped__(port=8192)
+
+        assert r["success"] is True   # tool call itself doesn't crash/propagate
+        assert len(calls["created"]) == 1   # the failing call was attempted
+
+        skipped_starts = {item["start"]: item for item in r["skipped"]}
+        assert "0x30000000" in skipped_starts
+        assert "sync failed" in skipped_starts["0x30000000"]["reason"]
+        assert "connection reset by peer" in skipped_starts["0x30000000"]["reason"]
+
+        synced_starts = {item["start"] for item in r["synced"]}
+        assert "0x140000000" in synced_starts   # other region still synced
+        assert "0x30000000" not in synced_starts
+    finally:
+        b._UNICORN_SESSIONS.pop(8192, None)
+        b.active_instances.pop(8192, None)
