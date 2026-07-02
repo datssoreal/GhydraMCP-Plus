@@ -299,3 +299,54 @@ def test_disassemble_commit_helper_posts_length(monkeypatch):
     b._post_disassemble_commit(8192, "0x140000000", 32)
     assert captured["path"] == "programs/current/memory/0x140000000/disassemble"
     assert captured["body"] == {"length": 32}
+
+
+def _sync_setup(monkeypatch, executed_pages):
+    pytest.importorskip("unicorn")
+    import bridge_mcp_hydra as b
+    from ghydra.dynamic.unicorn_engine import UnicornSession
+    s = UnicornSession()
+    # map + write two pages: 0x140000000 (in-segment) and 0x30000000 (executed heap)
+    s.map_bytes(0x140000000, b"\x90" * 0x1000)
+    s.map_bytes(0x30000000, b"\xcc" * 0x1000)
+    s.written_pages.update({0x140000000, 0x30000000})
+    s.executed_pages.update(executed_pages)
+    b._UNICORN_SESSIONS[8192] = s
+    b.active_instances[8192] = {"url": "http://localhost:8192"}
+
+    calls = {"patched": [], "created": [], "disasm": []}
+    monkeypatch.setattr(b, "safe_get", lambda port, path: {"success": True, "result": [
+        {"start": "0x140000000", "end": "0x140010000"}]})
+    monkeypatch.setattr(b, "safe_patch",
+                        lambda port, path, body: calls["patched"].append((path, body)) or {"success": True})
+    monkeypatch.setattr(b, "_post_create_block",
+                        lambda *a: calls["created"].append(a) or {"success": True, "result": {"name": "unpacked_0"}})
+    monkeypatch.setattr(b, "_post_disassemble_commit",
+                        lambda *a: calls["disasm"].append(a) or {"success": True})
+    return b, calls
+
+
+def test_sync_writes_in_segment_and_creates_block_for_executed_heap(monkeypatch):
+    b, calls = _sync_setup(monkeypatch, executed_pages={0x30000000})
+    try:
+        r = b.unicorn_sync_to_program.__wrapped__(port=8192)
+        assert r["success"] is True
+        # in-segment page -> patched; heap page -> created block
+        assert any("0x140000000" in p for p, _ in calls["patched"])
+        assert len(calls["created"]) == 1
+        starts = {item["start"] for item in r["synced"]}
+        assert "0x140000000" in starts and "0x30000000" in starts
+    finally:
+        b._UNICORN_SESSIONS.pop(8192, None)
+        b.active_instances.pop(8192, None)
+
+
+def test_sync_skips_out_of_segment_unexecuted_heap(monkeypatch):
+    b, calls = _sync_setup(monkeypatch, executed_pages=set())   # heap NOT executed
+    try:
+        r = b.unicorn_sync_to_program.__wrapped__(port=8192)
+        assert len(calls["created"]) == 0
+        assert any(item["start"] == "0x30000000" for item in r["skipped"])
+    finally:
+        b._UNICORN_SESSIONS.pop(8192, None)
+        b.active_instances.pop(8192, None)

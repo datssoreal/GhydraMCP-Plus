@@ -1524,6 +1524,7 @@ FORMATTERS = {
     "unicorn_hook_list": format_dynamic_state,
     "unicorn_call": format_dynamic_state,
     "unicorn_win64_scaffold": format_dynamic_state,
+    "unicorn_sync_to_program": format_dynamic_state,
 }
 
 
@@ -4148,6 +4149,101 @@ def memory_disassemble_commit(address: str, length: int, port: int | None = None
     """
     port = _get_instance_port(port)
     return simplify_response(_post_disassemble_commit(port, address, length))
+
+
+def _sync_fetch_segments(port: int) -> list[tuple[int, int]]:
+    """Return [(start, end_exclusive)] for the program's memory segments."""
+    resp = safe_get(port, "segments?limit=1000")
+    result = resp.get("result", resp) if isinstance(resp, dict) else resp
+    items = result if isinstance(result, list) else result.get("result", [])
+    segs: list[tuple[int, int]] = []
+    for seg in items:
+        try:
+            start = int(str(seg["start"]), 16)
+            end = int(str(seg["end"]), 16)
+            segs.append((start, end if end > start else end + 1))
+        except (KeyError, ValueError, TypeError):
+            continue
+    return segs
+
+
+def _sync_in_segment(start: int, length: int, segs: list[tuple[int, int]]) -> bool:
+    return any(s <= start and start + length <= e for s, e in segs)
+
+
+def _sync_write_chunks(port: int, address: int, data: bytes) -> None:
+    for i in range(0, len(data), 4096):
+        chunk = data[i:i + 4096]
+        safe_patch(port, f"programs/current/memory/{hex(address + i)}",
+                   {"bytes": chunk.hex(), "format": "hex"})
+
+
+@mcp.tool()
+@text_output
+def unicorn_sync_to_program(start: str | None = None, length: int | None = None,
+                            disassemble: bool = True, port: int | None = None) -> dict:
+    """Push emulator memory back into the Ghidra program and (re)disassemble it.
+
+    With no arguments, syncs every page the emulator wrote to (excluding
+    stack/PEB scratch). Pages inside an existing block are overwritten; executed
+    pages outside any block get a fresh block; unexecuted out-of-segment writes
+    are skipped. Pass start/length (hex/int) to sync one explicit region.
+
+    Args:
+        start: Optional explicit region start in hex
+        length: Optional explicit region length in bytes
+        disassemble: Commit-disassemble executed regions after writing (default True)
+        port: Specific Ghidra instance port (optional)
+    """
+    port = _get_instance_port(port)
+    try:
+        session = _get_unicorn_session(port)
+    except KeyError as e:
+        return _unicorn_error(str(e))
+
+    if start is not None:
+        try:
+            regions = [(int(start, 16), length or 0x1000)]
+        except ValueError as e:
+            return {"success": False, "error": {"code": "INVALID_ADDRESS", "message": str(e)}}
+    else:
+        regions = session.dirty_pages()
+
+    segs = _sync_fetch_segments(port)
+    synced: list[dict] = []
+    skipped: list[dict] = []
+    created_n = 0
+
+    for rstart, rlen in regions:
+        try:
+            data = session.read_memory(rstart, rlen)
+        except Exception as e:
+            skipped.append({"start": hex(rstart), "length": rlen, "reason": f"unreadable: {e}"})
+            continue
+        executed = any((rstart + off) & ~0xfff in session.executed_pages
+                       for off in range(0, rlen, 0x1000))
+        entry = {"start": hex(rstart), "length": rlen, "created": False, "disassembled": False}
+        if _sync_in_segment(rstart, rlen, segs):
+            _sync_write_chunks(port, rstart, data)
+            entry["block"] = "existing"
+        elif executed:
+            name = f"unpacked_{created_n}"
+            created_n += 1
+            _post_create_block(port, name, hex(rstart), rlen, data.hex())
+            entry["block"] = name
+            entry["created"] = True
+        else:
+            skipped.append({"start": hex(rstart), "length": rlen,
+                            "reason": "out-of-segment, not executed"})
+            continue
+        if disassemble and executed:
+            _post_disassemble_commit(port, hex(rstart), rlen)
+            entry["disassembled"] = True
+        synced.append(entry)
+
+    return {"success": True, "synced": synced, "skipped": skipped,
+            "timestamp": int(time.time() * 1000)}
+
 
 # Xrefs tools
 @mcp.tool()
