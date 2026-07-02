@@ -5,11 +5,14 @@ import eu.starsong.ghidra.server.GhydraServer.NotFoundException;
 import eu.starsong.ghidra.util.GhidraSwing;
 import eu.starsong.ghidra.util.GhidraUtil;
 import eu.starsong.ghidra.util.TransactionHelper;
+import ghidra.app.cmd.disassemble.DisassembleCommand;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryBlock;
+import ghidra.util.task.TaskMonitor;
 
 import java.util.Arrays;
 import java.util.List;
@@ -125,6 +128,92 @@ public class MemoryService {
             "Write memory at " + addressStr, () -> {
                 program.getMemory().setBytes(finalAddress, finalData);
                 return finalData.length;
+            });
+    }
+
+    /**
+     * Create a new initialized memory block and optionally fill it with hex bytes.
+     * Used to receive unpacked/heap regions synced back from the Unicorn engine.
+     */
+    public java.util.Map<String, Object> createBlock(Program program, String name,
+            String addressStr, long size, String hexBytes, String permissions) throws Exception {
+        Address address = GhidraUtil.resolveAddress(program, addressStr);
+        if (address == null) {
+            throw new IllegalArgumentException("Invalid address: " + addressStr);
+        }
+        if (size <= 0) {
+            throw new IllegalArgumentException("size must be positive");
+        }
+        byte[] data = null;
+        if (hexBytes != null && !hexBytes.isEmpty()) {
+            String cleaned = hexBytes.replaceAll("[^0-9a-fA-F]", "");
+            if (cleaned.length() % 2 != 0) {
+                throw new IllegalArgumentException("hex byte string must have even length");
+            }
+            data = new byte[cleaned.length() / 2];
+            for (int i = 0; i < cleaned.length(); i += 2) {
+                data[i / 2] = (byte) Integer.parseInt(cleaned.substring(i, i + 2), 16);
+            }
+        }
+        final String blockName = (name == null || name.isEmpty()) ? "unicorn_sync" : name;
+        final long finalSize = size;
+        final byte[] finalData = data;
+        final String perms = permissions;
+        final Address finalAddress = address;
+        return TransactionHelper.executeInTransaction(program,
+            "Create memory block " + blockName, () -> {
+                Memory mem = program.getMemory();
+                if (mem.getBlock(finalAddress) != null) {
+                    throw new IllegalArgumentException(
+                        "address " + addressStr + " overlaps an existing block");
+                }
+                MemoryBlock block = mem.createInitializedBlock(
+                    blockName, finalAddress, finalSize, (byte) 0, TaskMonitor.DUMMY, false);
+                boolean r = perms == null || perms.contains("r");
+                boolean w = perms == null || perms.contains("w");
+                boolean x = perms != null && perms.contains("x");
+                block.setPermissions(r, w, x);
+                if (finalData != null) {
+                    mem.setBytes(finalAddress, finalData);
+                }
+                java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+                out.put("name", block.getName());
+                out.put("start", block.getStart().toString());
+                out.put("end", block.getEnd().toString());
+                out.put("size", block.getSize());
+                out.put("permissions", (r ? "r" : "-") + (w ? "w" : "-") + (x ? "x" : "-"));
+                return out;
+            });
+    }
+
+    /**
+     * Clear code units in [address, address+length) and run the disassembler,
+     * committing real instructions (unlike the read-only disassembleAt view).
+     * Returns the number of instructions created in the range.
+     */
+    public int disassembleCommit(Program program, String addressStr, int length) throws Exception {
+        Address address = GhidraUtil.resolveAddress(program, addressStr);
+        if (address == null) {
+            throw new IllegalArgumentException("Invalid address: " + addressStr);
+        }
+        if (length <= 0) {
+            throw new IllegalArgumentException("length must be positive");
+        }
+        final Address start = address;
+        final Address end = address.add(length - 1);
+        return TransactionHelper.executeInTransaction(program,
+            "Disassemble " + addressStr, () -> {
+                AddressSet set = new AddressSet(start, end);
+                program.getListing().clearCodeUnits(start, end, false);
+                DisassembleCommand cmd = new DisassembleCommand(set, null, true);
+                cmd.applyTo(program, TaskMonitor.DUMMY);
+                int n = 0;
+                var it = program.getListing().getInstructions(set, true);
+                while (it.hasNext()) {
+                    it.next();
+                    n++;
+                }
+                return n;
             });
     }
 

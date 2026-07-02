@@ -25,6 +25,7 @@
     <ghidra.utility.jar>${project.basedir}/lib/Utility.jar</ghidra.utility.jar>
     <ghidra.base.jar>${project.basedir}/lib/Base.jar</ghidra.base.jar>
     <ghidra.emulation.jar>${project.basedir}/lib/Emulation.jar</ghidra.emulation.jar>
+    <ghidra.filesystem.jar>${project.basedir}/lib/FileSystem.jar</ghidra.filesystem.jar>
     <maven.deploy.skip>true</maven.deploy.skip>
     <maven.install.skip>true</maven.install.skip>
     <maven.build.timestamp.format>yyyyMMdd-HHmmss</maven.build.timestamp.format>
@@ -112,6 +113,13 @@
       <version>12.1.2</version>
       <scope>system</scope>
       <systemPath>${ghidra.emulation.jar}</systemPath>
+    </dependency>
+    <dependency>
+      <groupId>ghidra</groupId>
+      <artifactId>FileSystem</artifactId>
+      <version>12.1.2</version>
+      <scope>system</scope>
+      <systemPath>${ghidra.filesystem.jar}</systemPath>
     </dependency>
 
     <!-- Test dependencies -->
@@ -356,6 +364,7 @@
         <ghidra.utility.jar>${env.GHIDRA_HOME}/Ghidra/Framework/Utility/lib/Utility.jar</ghidra.utility.jar>
         <ghidra.base.jar>${env.GHIDRA_HOME}/Ghidra/Features/Base/lib/Base.jar</ghidra.base.jar>
         <ghidra.emulation.jar>${env.GHIDRA_HOME}/Ghidra/Framework/Emulation/lib/Emulation.jar</ghidra.emulation.jar>
+        <ghidra.filesystem.jar>${env.GHIDRA_HOME}/Ghidra/Framework/FileSystem/lib/FileSystem.jar</ghidra.filesystem.jar>
       </properties>
     </profile>
 

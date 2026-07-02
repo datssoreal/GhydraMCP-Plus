@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.5.0] - 2026-07-02
+
+### Added
+- `unicorn_sync_to_program` — push emulator memory (unpacked code) back into Ghidra,
+  auto-creating blocks for executed out-of-segment regions and committing disassembly.
+- `memory_create_block` and `memory_disassemble_commit` MCP tools + REST endpoints.
+- `unicorn_run` `stop_on` predicates: `oep` (execute-a-written-byte) and `no_progress`
+  (spin/polling detection), with `no_progress_window`/`no_progress_max_reads` tuning.
+- `unicorn_reset` `track_dirty` flag (default on) enabling dirty-page tracking.
+
 ## [3.4.2] - 2026-07-01
 
 ### Added

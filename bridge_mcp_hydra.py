@@ -62,7 +62,7 @@ DEFAULT_GHIDRA_HOST = "localhost"
 QUICK_DISCOVERY_RANGE = range(DEFAULT_GHIDRA_PORT, DEFAULT_GHIDRA_PORT+10)
 FULL_DISCOVERY_RANGE = range(DEFAULT_GHIDRA_PORT, DEFAULT_GHIDRA_PORT+20)
 
-BRIDGE_VERSION = "v3.4.2"
+BRIDGE_VERSION = "v3.5.0"
 REQUIRED_API_VERSION = 3000
 
 DEFAULT_TIMEOUT = int(os.environ.get("GHIDRA_TIMEOUT", "900"))
@@ -395,10 +395,10 @@ def _get_unicorn_session(port: int):
 def _unicorn_run_result(state: dict) -> dict:
     """Shape an engine run() state dict into a bridge response.
 
-    success is true for DONE and WATCHPOINT (both are an intended stop, not a
-    fault). Every other stop_reason returns an error envelope (error.code =
-    stop_reason, error.message from last_error) so the last_error message
-    reaches the MCP client via text_output.
+    success is true for DONE, WATCHPOINT, OEP, and NO_PROGRESS (all are an
+    intended stop, not a fault). Every other stop_reason returns an error
+    envelope (error.code = stop_reason, error.message from last_error) so the
+    last_error message reaches the MCP client via text_output.
     """
     from ghydra.dynamic.unicorn_engine import StopReason
     stop = state["stop_reason"]
@@ -409,7 +409,7 @@ def _unicorn_run_result(state: dict) -> dict:
         "last_error": state["last_error"],
         "timestamp": int(time.time() * 1000),
     }
-    if stop in (StopReason.DONE, StopReason.WATCHPOINT):
+    if stop in (StopReason.DONE, StopReason.WATCHPOINT, StopReason.OEP, StopReason.NO_PROGRESS):
         payload["success"] = True
         payload["registers"] = {k: hex(v) for k, v in state["registers"].items()}
         payload["trace"] = [hex(a) for a in state["trace"]]
@@ -420,6 +420,18 @@ def _unicorn_run_result(state: dict) -> dict:
             wh = state["watch_hit"]
             payload["watch_hit"] = {"address": hex(wh["address"]), "size": wh["size"],
                                     "value": hex(wh["value"]), "pc": hex(wh["pc"])}
+        if stop == StopReason.OEP and state.get("oep") is not None:
+            payload["oep"] = {"pc": hex(state["oep"])}
+        if stop == StopReason.NO_PROGRESS and state.get("no_progress"):
+            np = state["no_progress"]
+            payload["no_progress"] = {
+                "kind": np["kind"],
+                "pc": hex(np["pc"]),
+                "loop_pcs": [hex(a) for a in np["loop_pcs"]],
+                "reads_from": [hex(a) for a in np["reads_from"]],
+                "register_delta": {k: [hex(b), hex(a)]
+                                   for k, (b, a) in np["register_delta"].items()},
+            }
         return payload
     if stop == StopReason.COUNT:
         message = (state["last_error"]
@@ -445,6 +457,7 @@ def _apply_default_stack(session) -> tuple[int, int]:
     allowed by the purist contract; this does not relax lazy mapping.
     """
     session.map_bytes(_DEFAULT_STACK_BASE, b"\x00" * _DEFAULT_STACK_SIZE)
+    session.mark_scratch(_DEFAULT_STACK_BASE, _DEFAULT_STACK_SIZE)
     rsp = _DEFAULT_STACK_BASE + _DEFAULT_STACK_SIZE - 0x1000
     session.set_register("RSP", rsp)
     session.set_register("RBP", rsp)
@@ -1511,6 +1524,7 @@ FORMATTERS = {
     "unicorn_hook_list": format_dynamic_state,
     "unicorn_call": format_dynamic_state,
     "unicorn_win64_scaffold": format_dynamic_state,
+    "unicorn_sync_to_program": format_dynamic_state,
 }
 
 
@@ -3296,6 +3310,20 @@ def memory_read(address: str, length: int = 16, format: str = "hex", segment: st
 
     return simplified
 
+
+def _post_create_block(port: int, name: str, address: str, size: int,
+                       hexstr: str | None, permissions: str = "rwx") -> dict:
+    body = {"name": name, "address": address, "size": size, "permissions": permissions}
+    if hexstr is not None:
+        body["hex"] = hexstr
+    return safe_post(port, "programs/current/memory/blocks", body)
+
+
+def _post_disassemble_commit(port: int, address: str, length: int) -> dict:
+    return safe_post(port, f"programs/current/memory/{address}/disassemble",
+                     {"length": length})
+
+
 @mcp.tool()
 @text_output
 def memory_write(address: str, bytes_data: str, format: str = "hex", port: int | None = None) -> dict:
@@ -3623,7 +3651,7 @@ def emulation_dispose(port: int | None = None) -> dict:
 @mcp.tool()
 @text_output
 def unicorn_reset(start: str, registers: dict | None = None, stack: bool = True,
-                  port: int | None = None) -> dict:
+                  track_dirty: bool = True, port: int | None = None) -> dict:
     """Start a fresh Unicorn emulation session that lazily pulls bytes from Ghidra.
 
     Args:
@@ -3631,6 +3659,9 @@ def unicorn_reset(start: str, registers: dict | None = None, stack: bool = True,
         registers: Optional {register_name: hex_value} initial writes
         stack: Auto-map a default 1 MiB scratch stack and point RSP/RBP at it
             (default True; pass False to manage the stack yourself)
+        track_dirty: Track written/executed pages so unicorn_sync_to_program and
+            stop_on=["oep"] work (default True; set False only for pure speed on
+            giant loops, which disables dirty-page sync and OEP detection)
         port: Specific Ghidra instance port (optional)
     """
     port = _get_instance_port(port)
@@ -3645,7 +3676,8 @@ def unicorn_reset(start: str, registers: dict | None = None, stack: bool = True,
 
     try:
         client = GhidraHTTPClient(port=port)
-        session = UnicornSession(byte_provider=make_ghidra_provider(client))
+        session = UnicornSession(byte_provider=make_ghidra_provider(client),
+                                 track_dirty=track_dirty)
     except RuntimeError as e:
         return _unicorn_error(str(e))
 
@@ -3668,6 +3700,8 @@ def unicorn_reset(start: str, registers: dict | None = None, stack: bool = True,
 @text_output
 def unicorn_run(until: str, count: int = 100000, trace: bool = False,
                 watch_address: str | None = None, watch_length: int = 0,
+                stop_on: list[str] | None = None,
+                no_progress_window: int = 5000, no_progress_max_reads: int = 2,
                 port: int | None = None) -> dict:
     """Run the Unicorn session until an address, instruction count, fault, or
     (with watch_address) until that memory region changes.
@@ -3690,6 +3724,13 @@ def unicorn_run(until: str, count: int = 100000, trace: bool = False,
         watch_address: Optional hex address; run stops as soon as the bytes at
             this address (length watch_length) change
         watch_length: Number of bytes to watch (default 1 when watch_address is set)
+        stop_on: Optional list of early-stop predicates: "oep" (stop when a
+            previously-written byte is executed — classic unpack-complete signal;
+            needs track_dirty) and "no_progress" (stop on a spin/polling dead loop)
+        no_progress_window: Instructions per no_progress evaluation window (default 5000)
+        no_progress_max_reads: Max unique read addresses for a window to count as a
+            polling loop (default 2); raise both to loosen the detector on heavy
+            legitimate loops (unpackers, VM dispatchers)
         port: Specific Ghidra instance port (optional)
 
     Returns:
@@ -3707,8 +3748,22 @@ def unicorn_run(until: str, count: int = 100000, trace: bool = False,
         watch_len_int = watch_length or (1 if watch_address else 0)
     except ValueError as e:
         return {"success": False, "error": {"code": "INVALID_ADDRESS", "message": str(e)}}
+    stop_set = set(stop_on or [])
+    unknown = stop_set - {"oep", "no_progress"}
+    if unknown:
+        return {"success": False,
+                "error": {"code": "INVALID_STOP_ON",
+                          "message": f"unknown stop_on values: {sorted(unknown)} "
+                                     "(valid: 'oep', 'no_progress')"}}
+    if "oep" in stop_set and not session.track_dirty:
+        return {"success": False,
+                "error": {"code": "OEP_NEEDS_TRACKING",
+                          "message": "stop_on=['oep'] requires a session created "
+                                     "with track_dirty=True"}}
     state = session.run(begin=begin, until=until_int, count=count, trace=trace,
-                        watch_start=watch_addr_int, watch_length=watch_len_int)
+                        watch_start=watch_addr_int, watch_length=watch_len_int,
+                        stop_on=stop_set, no_progress_window=no_progress_window,
+                        no_progress_max_reads=no_progress_max_reads)
     return _unicorn_run_result(state)
 
 
@@ -3842,6 +3897,7 @@ def unicorn_win64_scaffold(image_base: str, port: int | None = None) -> dict:
     params_base = peb_base + 0x3000
     session.map_bytes(params_base, bytes(bytearray(0x1000)))  # zeroed RTL_USER_PROCESS_PARAMETERS stub
 
+    session.mark_scratch(peb_base, 0x4000)   # PEB/TEB/LDR/params scaffold
     session.set_register("GS_BASE", teb_base)
     
     return {
@@ -4058,6 +4114,179 @@ def memory_disassemble(address: str, limit: int = 50, offset: int = 0, port: int
 
     response = safe_get(port, f"memory/{address}/disassembly", params)
     return simplify_response(response)
+
+
+@mcp.tool()
+@text_output
+def memory_create_block(name: str, address: str, size: int, hex: str | None = None,
+                        permissions: str = "rwx", port: int | None = None) -> dict:
+    """Create a new initialized memory block (e.g. to hold unpacked code).
+
+    Args:
+        name: Block name
+        address: Start address in hex
+        size: Block size in bytes
+        hex: Optional initial contents as a hex string
+        permissions: Any of "r","w","x" (default "rwx")
+        port: Specific Ghidra instance port (optional)
+    """
+    port = _get_instance_port(port)
+    return simplify_response(_post_create_block(port, name, address, size, hex, permissions))
+
+
+@mcp.tool()
+@text_output
+def memory_disassemble_commit(address: str, length: int, port: int | None = None) -> dict:
+    """Clear and re-disassemble a range, committing real instructions to the listing.
+
+    Unlike memory_disassemble (a read-only view), this mutates the program so the
+    decompiler sees freshly-written/unpacked bytes as code.
+
+    Args:
+        address: Start address in hex
+        length: Number of bytes to disassemble
+        port: Specific Ghidra instance port (optional)
+    """
+    port = _get_instance_port(port)
+    return simplify_response(_post_disassemble_commit(port, address, length))
+
+
+def _sync_fetch_segments(port: int) -> list[tuple[int, int]]:
+    """Return [(start, end_exclusive)] for the program's memory segments."""
+    resp = safe_get(port, "segments?limit=1000")
+    result = resp.get("result", resp) if isinstance(resp, dict) else resp
+    items = result if isinstance(result, list) else result.get("result", [])
+    segs: list[tuple[int, int]] = []
+    for seg in items:
+        try:
+            start = int(str(seg["start"]), 16)
+            end = int(str(seg["end"]), 16)
+            segs.append((start, end if end > start else end + 1))
+        except (KeyError, ValueError, TypeError):
+            continue
+    return segs
+
+
+def _sync_in_segment(start: int, length: int, segs: list[tuple[int, int]]) -> bool:
+    return any(s <= start and start + length <= e for s, e in segs)
+
+
+def _sync_split_run(rstart: int, rlen: int,
+                    segs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Split [rstart, rstart+rlen) into maximal sub-runs that each lie
+    entirely inside one segment or entirely outside all segments.
+
+    dirty_pages() coalesces contiguous written pages without regard to
+    segment boundaries, so a single run can legitimately straddle the edge
+    of a segment (e.g. a write spills from an existing block into fresh
+    territory). Without splitting, _sync_in_segment sees the whole run as
+    "doesn't fit any one segment" and the entire run falls through to
+    create-block/skip handling, which fails when the in-segment portion
+    collides with the segment it should have patched instead. Probing at
+    page granularity matches the granularity of the ledger this feeds from
+    (written_pages/executed_pages are both page-keyed).
+    """
+    PAGE = 0x1000
+    end = rstart + rlen
+    runs: list[tuple[int, int, bool]] = []
+    pos = rstart
+    while pos < end:
+        page = pos - (pos % PAGE)
+        chunk_end = min(page + PAGE, end)
+        in_seg = _sync_in_segment(page, PAGE, segs)
+        if runs and runs[-1][2] == in_seg:
+            s, _l, f = runs[-1]
+            runs[-1] = (s, chunk_end - s, f)
+        else:
+            runs.append((pos, chunk_end - pos, in_seg))
+        pos = chunk_end
+    return [(s, l) for s, l, _ in runs]
+
+
+def _sync_write_chunks(port: int, address: int, data: bytes) -> None:
+    for i in range(0, len(data), 4096):
+        chunk = data[i:i + 4096]
+        safe_patch(port, f"programs/current/memory/{hex(address + i)}",
+                   {"bytes": chunk.hex(), "format": "hex"})
+
+
+@mcp.tool()
+@text_output
+def unicorn_sync_to_program(start: str | None = None, length: int | None = None,
+                            disassemble: bool = True, port: int | None = None) -> dict:
+    """Push emulator memory back into the Ghidra program and (re)disassemble it.
+
+    With no arguments, syncs every page the emulator wrote to (excluding
+    stack/PEB scratch). Pages inside an existing block are overwritten; executed
+    pages outside any block get a fresh block; unexecuted out-of-segment writes
+    are skipped. Pass start/length (hex/int) to sync one explicit region.
+
+    Args:
+        start: Optional explicit region start in hex
+        length: Optional explicit region length in bytes
+        disassemble: Commit-disassemble executed regions after writing (default True)
+        port: Specific Ghidra instance port (optional)
+    """
+    port = _get_instance_port(port)
+    try:
+        session = _get_unicorn_session(port)
+    except KeyError as e:
+        return _unicorn_error(str(e))
+
+    if start is not None:
+        try:
+            regions = [(int(start, 16), length or 0x1000)]
+        except ValueError as e:
+            return {"success": False, "error": {"code": "INVALID_ADDRESS", "message": str(e)}}
+    else:
+        regions = session.dirty_pages()
+
+    segs = _sync_fetch_segments(port)
+    subregions: list[tuple[int, int]] = []
+    for rstart, rlen in regions:
+        subregions.extend(_sync_split_run(rstart, rlen, segs))
+
+    synced: list[dict] = []
+    skipped: list[dict] = []
+    created_n = 0
+
+    for rstart, rlen in subregions:
+        try:
+            data = session.read_memory(rstart, rlen)
+        except Exception as e:
+            skipped.append({"start": hex(rstart), "length": rlen, "reason": f"unreadable: {e}"})
+            continue
+        executed = any((rstart + off) & ~0xfff in session.executed_pages
+                       for off in range(0, rlen, 0x1000))
+        entry = {"start": hex(rstart), "length": rlen, "created": False, "disassembled": False}
+        try:
+            if _sync_in_segment(rstart, rlen, segs):
+                _sync_write_chunks(port, rstart, data)
+                entry["block"] = "existing"
+            elif executed:
+                name = f"unpacked_{created_n}"
+                created_n += 1
+                _post_create_block(port, name, hex(rstart), rlen, data.hex())
+                entry["block"] = name
+                entry["created"] = True
+            else:
+                skipped.append({"start": hex(rstart), "length": rlen,
+                                "reason": "out-of-segment, not executed"})
+                continue
+        except Exception as e:
+            skipped.append({"start": hex(rstart), "length": rlen, "reason": f"sync failed: {e}"})
+            continue
+        if disassemble and executed:
+            try:
+                _post_disassemble_commit(port, hex(rstart), rlen)
+                entry["disassembled"] = True
+            except Exception as e:
+                entry["disassemble_error"] = str(e)
+        synced.append(entry)
+
+    return {"success": True, "synced": synced, "skipped": skipped,
+            "timestamp": int(time.time() * 1000)}
+
 
 # Xrefs tools
 @mcp.tool()

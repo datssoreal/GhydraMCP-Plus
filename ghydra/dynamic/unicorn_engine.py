@@ -78,18 +78,26 @@ class StopReason(str, Enum):
     REDIRECT_STORM = "REDIRECT_STORM"
     UNMAPPED = "UNMAPPED"
     WATCHPOINT = "WATCHPOINT"
+    OEP = "OEP"
+    NO_PROGRESS = "NO_PROGRESS"
 
 
 class UnicornSession:
     PAGE = 0x1000
 
-    def __init__(self, byte_provider: Optional[Callable[[int, int], bytes]] = None):
+    def __init__(self, byte_provider: Optional[Callable[[int, int], bytes]] = None,
+                 track_dirty: bool = True):
         if not _HAVE_UNICORN:
             raise RuntimeError("unicorn not installed; pip install ghydramcp[unicorn]")
         self._uc = Uc(UC_ARCH_X86, UC_MODE_64)
         self.byte_provider = byte_provider
         self._mapped: set[int] = set()
         self._hooks: dict[int, Hook] = {}
+        self.track_dirty = track_dirty
+        self.written_pages: set[int] = set()
+        self.written_bits: dict[int, bytearray] = {}   # page -> PAGE/8-byte bitmap
+        self.executed_pages: set[int] = set()
+        self.scratch_ranges: list[tuple[int, int]] = []
 
     def _ensure_mapped(self, address: int, length: int) -> None:
         start = address & ~(self.PAGE - 1)
@@ -117,6 +125,23 @@ class UnicornSession:
         start = address & ~(self.PAGE - 1)
         end = (address + length + self.PAGE - 1) & ~(self.PAGE - 1)
         return any(page in self._mapped for page in range(start, end, self.PAGE))
+
+    def mark_scratch(self, base: int, size: int) -> None:
+        """Register a scratch region (stack/PEB/call frame) to exclude from sync."""
+        self.scratch_ranges.append((base, size))
+
+    def _in_scratch(self, page: int) -> bool:
+        return any(base <= page < base + size for base, size in self.scratch_ranges)
+
+    def dirty_pages(self) -> list[tuple[int, int]]:
+        """Written pages minus scratch, coalesced into contiguous (start, length) runs."""
+        runs: list[tuple[int, int]] = []
+        for page in sorted(p for p in self.written_pages if not self._in_scratch(p)):
+            if runs and page == runs[-1][0] + runs[-1][1]:
+                runs[-1] = (runs[-1][0], runs[-1][1] + self.PAGE)
+            else:
+                runs.append((page, self.PAGE))
+        return runs
 
     def read_memory(self, address: int, length: int) -> bytes:
         return bytes(self._uc.mem_read(address, length))
@@ -157,6 +182,7 @@ class UnicornSession:
 
         # All validation done; safe to mutate emulator state from here.
         self.map_bytes(_CALL_STACK_BASE, b"\x00" * _CALL_STACK_SIZE)
+        self.mark_scratch(_CALL_STACK_BASE, _CALL_STACK_SIZE)
 
         args_cursor = _CALL_STACK_BASE
         resolved: list[int] = []
@@ -201,26 +227,83 @@ class UnicornSession:
         }
 
     def run(self, begin, until=0, count=100000, timeout=0, trace=False,
-            max_lazy_pages=4096, watch_start=None, watch_length=0):
+            max_lazy_pages=4096, watch_start=None, watch_length=0,
+            stop_on=None, no_progress_window=5000, no_progress_max_reads=2):
         """Run the emulation session.
 
         Lazy mapping intercepts unmapped reads/writes and requests the page
-        from the bridge callback.
+        from the bridge callback. stop_on may contain "oep" (stop when executing
+        a previously-written byte) and "no_progress" (stop on a spin/polling loop).
         """
-        from unicorn import (UC_HOOK_CODE, UC_HOOK_MEM_WRITE,
+        from unicorn import (UC_HOOK_CODE, UC_HOOK_MEM_WRITE, UC_HOOK_MEM_READ,
                              UC_HOOK_MEM_UNMAPPED, UC_MEM_FETCH_UNMAPPED, UcError)
+        stop_on = set(stop_on or ())
+        oep_enabled = "oep" in stop_on
+        noprog_enabled = "no_progress" in stop_on
+        if oep_enabled and not self.track_dirty:
+            raise ValueError("stop_on=['oep'] requires track_dirty=True")
+
         steps = {"n": 0}
         executed: list[int] = []
         mem_writes: list[dict] = []
         hook_log: list[dict] = []
         trace_trunc = {"hit": False}
-        ctrl = {"redirect": False, "trap": False, "hook_error": None}
+        ctrl = {"redirect": False, "trap": False, "hook_error": None,
+                "oep": None, "no_progress": None}
         if watch_start is not None and watch_length > 0:
             watch_length = min(watch_length, _WATCH_MAX_LEN)
             watch_end = watch_start + watch_length
         else:
             watch_end = None
         watch_hit = {"hit": False, "address": None, "size": None, "value": None, "pc": None}
+
+        _NOPROG_REGS = ("RIP", "RSP", "RAX", "RBX", "RCX", "RDX", "RSI", "RDI")
+        window = {"start": 0, "writes": 0, "reads": set(), "pcs": set(), "regs": ()}
+        seen_hashes: set[int] = set()
+        noprog_seen_first_window = {"hit": False}
+
+        def _snapshot():
+            return tuple(self.get_register(r) for r in _NOPROG_REGS)
+
+        def _reset_window():
+            window["start"] = steps["n"]
+            window["writes"] = 0
+            window["reads"].clear()
+            window["pcs"].clear()
+            window["regs"] = _snapshot()
+
+        def _mark_written(address, size):
+            a = address
+            end = address + size
+            while a < end:
+                page = a & ~(self.PAGE - 1)
+                self.written_pages.add(page)
+                bm = self.written_bits.get(page)
+                if bm is None:
+                    bm = bytearray(self.PAGE // 8)
+                    self.written_bits[page] = bm
+                off = a - page
+                bm[off >> 3] |= 1 << (off & 7)
+                a += 1
+
+        def _was_written(address):
+            page = address & ~(self.PAGE - 1)
+            if page not in self.written_pages:
+                return False
+            bm = self.written_bits.get(page)
+            if bm is None:
+                return False
+            off = address - page
+            return bool(bm[off >> 3] & (1 << (off & 7)))
+
+        def _build_no_progress(kind):
+            before = window["regs"] or _snapshot()
+            now = _snapshot()
+            delta = {name: (b, a) for name, b, a in zip(_NOPROG_REGS, before, now) if b != a}
+            return {"kind": kind, "pc": self.get_register("RIP"),
+                    "loop_pcs": sorted(window["pcs"])[:32],
+                    "reads_from": sorted(window["reads"])[:32],
+                    "register_delta": delta}
 
         def _code_hook(uc, address, size, _user):
             hook = self._hooks.get(address)
@@ -253,6 +336,33 @@ class UnicornSession:
                     uc.emu_stop()
                     return
             steps["n"] += 1
+            if self.track_dirty:
+                self.executed_pages.add(address & ~(self.PAGE - 1))
+            if oep_enabled and _was_written(address):
+                ctrl["oep"] = address
+                uc.emu_stop()
+                return
+            if noprog_enabled:
+                window["pcs"].add(address)
+                if steps["n"] - window["start"] >= no_progress_window:
+                    if window["writes"] == 0:
+                        h = hash(_snapshot())
+                        # A single zero-write window is not yet evidence of anything (it
+                        # could be the first pass through a loop that hasn't repeated, or
+                        # genuine progress that just hasn't written yet); classification
+                        # needs at least one prior zero-write window to compare against.
+                        if noprog_seen_first_window["hit"]:
+                            if h in seen_hashes:
+                                ctrl["no_progress"] = _build_no_progress("spin_lock")
+                                uc.emu_stop()
+                                return
+                            if len(window["reads"]) <= no_progress_max_reads:
+                                ctrl["no_progress"] = _build_no_progress("polling")
+                                uc.emu_stop()
+                                return
+                        seen_hashes.add(h)
+                        noprog_seen_first_window["hit"] = True
+                    _reset_window()
             if trace:
                 if len(executed) < _TRACE_CAP:
                     executed.append(address)
@@ -260,6 +370,10 @@ class UnicornSession:
                     trace_trunc["hit"] = True
 
         def _write_hook(uc, access, address, size, value, _user):
+            if self.track_dirty:
+                _mark_written(address, size)
+            if noprog_enabled:
+                window["writes"] += size
             if trace:
                 if len(mem_writes) < _TRACE_CAP:
                     mem_writes.append({"address": address, "size": size, "value": value})
@@ -269,6 +383,9 @@ class UnicornSession:
                 watch_hit.update(hit=True, address=address, size=size, value=value,
                                  pc=self.get_register("RIP"))
                 uc.emu_stop()
+
+        def _read_hook(uc, access, address, size, value, _user):
+            window["reads"].add(address)
 
         lazy = {"n": 0}
         lazy_fail = {"msg": None, "reason": None}
@@ -303,8 +420,12 @@ class UnicornSession:
             lazy["n"] += 1
             return True
 
+        need_write_hook = trace or watch_end is not None or self.track_dirty or noprog_enabled
+        if noprog_enabled:
+            _reset_window()
         h_code = self._uc.hook_add(UC_HOOK_CODE, _code_hook)
-        h_write = self._uc.hook_add(UC_HOOK_MEM_WRITE, _write_hook) if (trace or watch_end is not None) else None
+        h_write = self._uc.hook_add(UC_HOOK_MEM_WRITE, _write_hook) if need_write_hook else None
+        h_read = self._uc.hook_add(UC_HOOK_MEM_READ, _read_hook) if noprog_enabled else None
         h_unmapped = self._uc.hook_add(UC_HOOK_MEM_UNMAPPED, _unmapped_hook)
         stop_reason = StopReason.DONE
         last_error = None
@@ -339,6 +460,12 @@ class UnicornSession:
                 if ctrl["trap"]:
                     stop_reason = StopReason.HOOK_TRAP
                     break
+                if ctrl["oep"] is not None:
+                    stop_reason = StopReason.OEP
+                    break
+                if ctrl["no_progress"] is not None:
+                    stop_reason = StopReason.NO_PROGRESS
+                    break
                 if ctrl["redirect"]:
                     redirects += 1
                     if redirects >= _REDIRECT_CAP:
@@ -360,6 +487,8 @@ class UnicornSession:
             self._uc.hook_del(h_code)
             if h_write is not None:
                 self._uc.hook_del(h_write)
+            if h_read is not None:
+                self._uc.hook_del(h_read)
             self._uc.hook_del(h_unmapped)
 
         return {
@@ -373,4 +502,6 @@ class UnicornSession:
             "hook_log": hook_log,
             "trace_truncated": trace_trunc["hit"],
             "watch_hit": dict(watch_hit) if watch_hit["hit"] else None,
+            "oep": ctrl["oep"],
+            "no_progress": ctrl["no_progress"],
         }

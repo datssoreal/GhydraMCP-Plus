@@ -109,6 +109,8 @@ def test_unicorn_win64_scaffold_maps_and_populates_gs(monkeypatch):
             captured[reg] = val
         def region_is_mapped(self, addr, length):
             return False
+        def mark_scratch(self, base, size):
+            captured[("scratch", base)] = size
 
     monkeypatch.setattr(b, "_get_instance_port", lambda p=None: 8192)
     monkeypatch.setattr(b, "_get_unicorn_session", lambda p: MockSession())
@@ -205,6 +207,8 @@ def test_win64_scaffold_maps_process_parameters_page(monkeypatch):
             captured[reg] = val
         def region_is_mapped(self, addr, length):
             return False
+        def mark_scratch(self, base, size):
+            captured[("scratch", base)] = size
 
     monkeypatch.setattr(b, "_get_instance_port", lambda p=None: 8192)
     monkeypatch.setattr(b, "_get_unicorn_session", lambda p: MockSession())
@@ -225,3 +229,196 @@ def test_watchpoint_without_watch_hit_does_not_crash():
     assert r["success"] is True
     assert r["stop_reason"] == "WATCHPOINT"
     assert r.get("watch_hit") is None          # omitted/None, but no exception
+
+
+def _state_full(stop, **extra):
+    base = {"pc": 0x2000, "steps": 5000, "stop_reason": stop, "last_error": None,
+            "registers": {"RIP": 0x2000, "RAX": 0x0}, "trace": [], "mem_writes": [],
+            "watch_hit": None, "oep": None, "no_progress": None}
+    base.update(extra)
+    return base
+
+
+def test_oep_result_is_success_with_payload():
+    r = _unicorn_run_result(_state_full("OEP", oep=0x2000))
+    assert r["success"] is True
+    assert r["oep"] == {"pc": "0x2000"}
+    assert r["registers"]["RAX"] == "0x0"
+
+
+def test_no_progress_result_hex_formats_payload():
+    np = {"kind": "polling", "pc": 0x140001045,
+          "loop_pcs": [0x140001040, 0x140001044], "reads_from": [0x7ffdf000],
+          "register_delta": {"RCX": (0x5, 0x6)}}
+    r = _unicorn_run_result(_state_full("NO_PROGRESS", no_progress=np))
+    assert r["success"] is True
+    assert r["no_progress"]["kind"] == "polling"
+    assert r["no_progress"]["pc"] == "0x140001045"
+    assert r["no_progress"]["loop_pcs"] == ["0x140001040", "0x140001044"]
+    assert r["no_progress"]["reads_from"] == ["0x7ffdf000"]
+    assert r["no_progress"]["register_delta"] == {"RCX": ["0x5", "0x6"]}
+
+
+def test_unicorn_run_rejects_oep_without_tracking(monkeypatch):
+    pytest.importorskip("unicorn")
+    import bridge_mcp_hydra as b
+    from ghydra.dynamic.unicorn_engine import UnicornSession
+    b._UNICORN_SESSIONS[8192] = UnicornSession(track_dirty=False)
+    b.active_instances[8192] = {"url": "http://localhost:8192"}
+    try:
+        r = b.unicorn_run.__wrapped__("0x0", stop_on=["oep"], port=8192)
+        assert r["success"] is False
+        assert r["error"]["code"] == "OEP_NEEDS_TRACKING"
+    finally:
+        b._UNICORN_SESSIONS.pop(8192, None)
+        b.active_instances.pop(8192, None)
+
+
+def test_create_block_helper_posts_expected_payload(monkeypatch):
+    import bridge_mcp_hydra as b
+    captured = {}
+
+    def fake_post(port, path, body):
+        captured["path"] = path
+        captured["body"] = body
+        return {"success": True, "result": {"name": body["name"]}}
+
+    monkeypatch.setattr(b, "safe_post", fake_post)
+    out = b._post_create_block(8192, "unpacked_0", "0x140000000", 4096, "9090")
+    assert captured["path"] == "programs/current/memory/blocks"
+    assert captured["body"] == {"name": "unpacked_0", "address": "0x140000000",
+                                "size": 4096, "hex": "9090", "permissions": "rwx"}
+    assert out["success"] is True
+
+
+def test_disassemble_commit_helper_posts_length(monkeypatch):
+    import bridge_mcp_hydra as b
+    captured = {}
+    monkeypatch.setattr(b, "safe_post",
+                        lambda port, path, body: captured.update(path=path, body=body) or {"success": True})
+    b._post_disassemble_commit(8192, "0x140000000", 32)
+    assert captured["path"] == "programs/current/memory/0x140000000/disassemble"
+    assert captured["body"] == {"length": 32}
+
+
+def _sync_setup(monkeypatch, executed_pages):
+    pytest.importorskip("unicorn")
+    import bridge_mcp_hydra as b
+    from ghydra.dynamic.unicorn_engine import UnicornSession
+    s = UnicornSession()
+    # map + write two pages: 0x140000000 (in-segment) and 0x30000000 (executed heap)
+    s.map_bytes(0x140000000, b"\x90" * 0x1000)
+    s.map_bytes(0x30000000, b"\xcc" * 0x1000)
+    s.written_pages.update({0x140000000, 0x30000000})
+    s.executed_pages.update(executed_pages)
+    b._UNICORN_SESSIONS[8192] = s
+    b.active_instances[8192] = {"url": "http://localhost:8192"}
+
+    calls = {"patched": [], "created": [], "disasm": []}
+    monkeypatch.setattr(b, "safe_get", lambda port, path: {"success": True, "result": [
+        {"start": "0x140000000", "end": "0x140010000"}]})
+    monkeypatch.setattr(b, "safe_patch",
+                        lambda port, path, body: calls["patched"].append((path, body)) or {"success": True})
+    monkeypatch.setattr(b, "_post_create_block",
+                        lambda *a: calls["created"].append(a) or {"success": True, "result": {"name": "unpacked_0"}})
+    monkeypatch.setattr(b, "_post_disassemble_commit",
+                        lambda *a: calls["disasm"].append(a) or {"success": True})
+    return b, calls
+
+
+def test_sync_writes_in_segment_and_creates_block_for_executed_heap(monkeypatch):
+    b, calls = _sync_setup(monkeypatch, executed_pages={0x30000000})
+    try:
+        r = b.unicorn_sync_to_program.__wrapped__(port=8192)
+        assert r["success"] is True
+        # in-segment page -> patched; heap page -> created block
+        assert any("0x140000000" in p for p, _ in calls["patched"])
+        assert len(calls["created"]) == 1
+        starts = {item["start"] for item in r["synced"]}
+        assert "0x140000000" in starts and "0x30000000" in starts
+    finally:
+        b._UNICORN_SESSIONS.pop(8192, None)
+        b.active_instances.pop(8192, None)
+
+
+def test_sync_skips_out_of_segment_unexecuted_heap(monkeypatch):
+    b, calls = _sync_setup(monkeypatch, executed_pages=set())   # heap NOT executed
+    try:
+        r = b.unicorn_sync_to_program.__wrapped__(port=8192)
+        assert len(calls["created"]) == 0
+        assert any(item["start"] == "0x30000000" for item in r["skipped"])
+    finally:
+        b._UNICORN_SESSIONS.pop(8192, None)
+        b.active_instances.pop(8192, None)
+
+
+def test_sync_isolates_a_failing_region_from_the_rest(monkeypatch):
+    # heap page (0x30000000) is executed -> would normally get a fresh block via
+    # _post_create_block; make that call raise (simulating a transient HTTP failure)
+    # and confirm the in-segment page (0x140000000) still syncs successfully in the
+    # same call, and the failing region is recorded in "skipped" instead of crashing
+    # the whole loop.
+    b, calls = _sync_setup(monkeypatch, executed_pages={0x30000000})
+    try:
+        def raising_create_block(*a):
+            calls["created"].append(a)
+            raise RuntimeError("connection reset by peer")
+
+        monkeypatch.setattr(b, "_post_create_block", raising_create_block)
+
+        r = b.unicorn_sync_to_program.__wrapped__(port=8192)
+
+        assert r["success"] is True   # tool call itself doesn't crash/propagate
+        assert len(calls["created"]) == 1   # the failing call was attempted
+
+        skipped_starts = {item["start"]: item for item in r["skipped"]}
+        assert "0x30000000" in skipped_starts
+        assert "sync failed" in skipped_starts["0x30000000"]["reason"]
+        assert "connection reset by peer" in skipped_starts["0x30000000"]["reason"]
+
+        synced_starts = {item["start"] for item in r["synced"]}
+        assert "0x140000000" in synced_starts   # other region still synced
+        assert "0x30000000" not in synced_starts
+    finally:
+        b._UNICORN_SESSIONS.pop(8192, None)
+        b.active_instances.pop(8192, None)
+
+
+def test_sync_splits_a_run_straddling_a_segment_boundary(monkeypatch):
+    # ONE contiguous 2-page dirty run (0x140000000..0x140002000), but the fake
+    # segment only covers the first page -> the run straddles the segment edge.
+    # The second page is executed, so its spillover should become a fresh block,
+    # not fail the whole run.
+    pytest.importorskip("unicorn")
+    import bridge_mcp_hydra as b
+    from ghydra.dynamic.unicorn_engine import UnicornSession
+    s = UnicornSession()
+    s.map_bytes(0x140000000, b"\x90" * 0x2000)
+    s.written_pages.update({0x140000000, 0x140001000})
+    s.executed_pages.update({0x140001000})
+    b._UNICORN_SESSIONS[8192] = s
+    b.active_instances[8192] = {"url": "http://localhost:8192"}
+
+    calls = {"patched": [], "created": []}
+    monkeypatch.setattr(b, "safe_get", lambda port, path: {"success": True, "result": [
+        {"start": "0x140000000", "end": "0x140001000"}]})  # segment covers only page 0
+    monkeypatch.setattr(b, "safe_patch",
+                        lambda port, path, body: calls["patched"].append((path, body)) or {"success": True})
+    monkeypatch.setattr(b, "_post_create_block",
+                        lambda *a: calls["created"].append(a) or {"success": True, "result": {"name": "unpacked_0"}})
+    monkeypatch.setattr(b, "_post_disassemble_commit",
+                        lambda *a: {"success": True})
+    try:
+        r = b.unicorn_sync_to_program.__wrapped__(port=8192)
+        assert r["success"] is True
+        # page 0 (in-segment) -> patched; page 1 (out-of-segment, executed) -> new block
+        assert any("0x140000000" in p for p, _ in calls["patched"])
+        assert len(calls["created"]) == 1
+        assert calls["created"][0][2] == "0x140001000"   # address arg to _post_create_block
+        starts = {item["start"] for item in r["synced"]}
+        assert "0x140000000" in starts and "0x140001000" in starts
+        # neither half should be reported as failed/skipped
+        assert r["skipped"] == []
+    finally:
+        b._UNICORN_SESSIONS.pop(8192, None)
+        b.active_instances.pop(8192, None)
